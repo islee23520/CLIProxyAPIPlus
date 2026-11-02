@@ -273,6 +273,13 @@ routing:
   # for maximum parallel concurrency.
   # Ignored when routing.session-affinity is false.
   session-affinity-subagents: true
+  # When true, disabling a credential (management API or auth file "disabled": true) takes
+  # effect immediately: its session bindings are dropped so the next turn of every bound
+  # session is re-picked by the strategy above (round-robin by default), and requests still
+  # running on it are cancelled. A cancelled request that has not streamed yet is retried on
+  # another credential; a stream already in progress ends with a retryable auth_disabled error.
+  # Default: false (bindings and in-flight requests stay until they finish or expire).
+  disabled-auth-reroute: false
 
 # Codex provider behavior.
 codex:

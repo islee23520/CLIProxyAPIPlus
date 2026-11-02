@@ -193,6 +193,9 @@ type Manager struct {
 	refreshCancel context.CancelFunc
 	refreshLoop   *authAutoRefreshLoop
 
+	// inflightAttempts lets routing.disabled-auth-reroute cancel attempts of a disabled auth.
+	inflightAttempts inflightAuthAttempts
+
 	requestPrepareLocks sync.Map
 	// refreshLocks serializes credential refresh per auth ID so concurrent
 	// 401 recoveries and auto-refresh workers do not race the same refresh_token.

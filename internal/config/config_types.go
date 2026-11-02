@@ -435,6 +435,14 @@ type RoutingConfig struct {
 	// When false, subagents are distributed across the credential pool via the fallback selector.
 	// Default: true. Ignored when SessionAffinity is false.
 	SessionAffinitySubagents *bool `yaml:"session-affinity-subagents,omitempty" json:"session-affinity-subagents,omitempty"`
+
+	// DisabledAuthReroute makes disabling a credential take effect immediately:
+	// its session-affinity bindings are dropped so the next turn of a bound session
+	// is re-picked by the fallback strategy (round-robin by default), and upstream
+	// attempts still running on it are cancelled. A cancelled attempt that has not
+	// streamed yet is retried on another credential; a stream already in progress
+	// ends with a retryable auth_disabled error. Default: false.
+	DisabledAuthReroute bool `yaml:"disabled-auth-reroute,omitempty" json:"disabled-auth-reroute,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

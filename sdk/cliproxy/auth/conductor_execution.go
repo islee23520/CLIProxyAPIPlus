@@ -632,8 +632,15 @@ func (m *Manager) executeMixedOnce(ctx context.Context, providers []string, req 
 				execReq = attachResolvedAPIKeyModelInfo(routing, execReq, auth, routeModel, upstreamModel)
 			}
 			execCtx = syncMetadataSessionToContext(execCtx, execOpts.Metadata)
+			attemptCtx, releaseAttempt := m.bindAttemptToAuth(execCtx, auth.ID)
 			startExec := time.Now()
-			resp, errExec := executor.Execute(execCtx, auth, execReq, execOpts)
+			resp, errExec := executor.Execute(attemptCtx, auth, execReq, execOpts)
+			releaseAttempt()
+			if attemptCancelledByDisable(execCtx, attemptCtx) {
+				logEntryWithRequestID(ctx).Infof("disabled-auth-reroute: auth %s disabled mid-request; retrying on another credential", auth.ID)
+				authErr = errAuthDisabledInFlight
+				break
+			}
 			errExec = markUpstreamExecutionAttemptFromContext(execCtx, errExec)
 			durationExec := time.Since(startExec)
 			if errExec != nil {
@@ -1230,8 +1237,19 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			models = models[:1]
 			pooled = false
 		}
-		streamResult, errStream := m.executeStreamWithModelPool(execCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
+		streamCtx, releaseStreamAttempt := execCtx, func() {}
+		if selection == nil {
+			streamCtx, releaseStreamAttempt = m.bindAttemptToAuth(execCtx, auth.ID)
+		}
+		streamResult, errStream := m.executeStreamWithModelPool(streamCtx, executor, auth, provider, execReq, execOpts, routeModel, streamExecutionModel, models, pooled, aliasResult, routing, !homeMode || selection != nil, selection != nil)
+		if errStream != nil && attemptCancelledByDisable(execCtx, streamCtx) {
+			releaseStreamAttempt()
+			entry.Infof("disabled-auth-reroute: auth %s disabled before stream start; retrying on another credential", auth.ID)
+			lastErr = errAuthDisabledInFlight
+			continue
+		}
 		if errStream != nil {
+			releaseStreamAttempt()
 			if hasUpstreamExecutionAttempt(errStream) {
 				upstreamErr = errStream
 			}
@@ -1288,7 +1306,7 @@ func (m *Manager) executeStreamMixedOnce(ctx context.Context, providers []string
 			}
 			return wrapHomeStream(ctx, streamResult, selection, releaseAttempt), nil
 		}
-		return streamResult, nil
+		return guardStreamForDisable(execCtx, streamCtx, streamResult, releaseStreamAttempt), nil
 	}
 }
 
