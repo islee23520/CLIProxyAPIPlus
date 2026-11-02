@@ -46,7 +46,7 @@ func TestSaveTokenToFile_UnsupportedMetadataPreservesFile(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				storage := &KimiTokenStorage{Type: "before", Metadata: map[string]any{"unsupported": value.data}}
+				storage := &KimiTokenStorage{Metadata: map[string]any{"unsupported": value.data}}
 				err := storage.SaveTokenToFile(path)
 				var unsupported *json.UnsupportedTypeError
 				if !errors.As(err, &unsupported) || unsupported.Type != reflect.TypeOf(value.data) {
@@ -87,7 +87,7 @@ func TestSaveTokenToFile_MarshalerFailurePreservesFile(t *testing.T) {
 			}
 			sentinel := errors.New("synthetic marshal failure")
 			marshaler := &kimiFailingJSONMarshaler{err: sentinel}
-			storage := &KimiTokenStorage{Type: "before", Metadata: map[string]any{"custom": marshaler}}
+			storage := &KimiTokenStorage{Metadata: map[string]any{"custom": marshaler}}
 			err := storage.SaveTokenToFile(path)
 			if !errors.Is(err, sentinel) {
 				t.Fatalf("expected wrapped marshal failure, got %v", err)
@@ -116,6 +116,8 @@ func TestSaveTokenToFile_PreservesEncodingAndFileIdentity(t *testing.T) {
 		AccessToken: "synthetic <access>&",
 		TokenType:   "Bearer",
 		Type:        "kimi",
+		Domain:      KimiDefaultDomain,
+		BaseURL:     ResolveKimiAPIBaseURL(KimiDefaultDomain),
 		Metadata: map[string]any{
 			"nested": map[string]any{"html": "<div>&</div>", "values": []any{"first", true, 42}},
 		},

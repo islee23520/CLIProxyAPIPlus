@@ -9,10 +9,13 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	log "github.com/sirupsen/logrus"
 )
 
 const (
-	oauthSessionTTL          = 10 * time.Minute
+	// oauthSessionTTL must cover device-code flows (xAI ~30m, Kimi ~15m).
+	oauthSessionTTL          = 30 * time.Minute
 	oauthCompletedSessionTTL = time.Minute
 	maxOAuthStateLength      = 128
 )
@@ -26,6 +29,7 @@ var (
 	errInvalidOAuthState      = errors.New("invalid oauth state")
 	errUnsupportedOAuthFlow   = errors.New("unsupported oauth provider")
 	errOAuthSessionNotPending = errors.New("oauth session is not pending")
+	errOAuthSessionSaving     = errors.New("oauth session credential save is already in progress")
 	errOAuthSessionExists     = errors.New("oauth session already exists")
 )
 
@@ -34,6 +38,7 @@ type oauthSession struct {
 	Status    string
 	Source    string
 	Metadata  map[string]any
+	Saving    bool
 	Completed bool
 	CreatedAt time.Time
 	ExpiresAt time.Time
@@ -217,21 +222,96 @@ func (s *oauthSessionStore) IsPending(state, provider string) bool {
 	if !ok {
 		return false
 	}
-	if session.Completed {
+	if session.Completed || session.Saving {
 		return false
 	}
-	if session.Status != "" {
-		if !strings.EqualFold(session.Provider, "kiro") {
-			return false
-		}
-		if !strings.HasPrefix(session.Status, "device_code|") && !strings.HasPrefix(session.Status, "auth_url|") {
-			return false
-		}
+	if !isOAuthSessionPendingStatus(session) {
+		return false
 	}
 	if provider == "" {
 		return true
 	}
 	return strings.EqualFold(session.Provider, provider)
+}
+
+func isOAuthSessionPendingStatus(session oauthSession) bool {
+	if session.Status == "" {
+		return true
+	}
+	if !strings.EqualFold(session.Provider, "kiro") {
+		return false
+	}
+	return strings.HasPrefix(session.Status, "device_code|") || strings.HasPrefix(session.Status, "auth_url|")
+}
+
+// BeginSave atomically claims a pending OAuth session for credential
+// persistence. Once claimed, cancellation must report false because saving has
+// already won the race.
+func (s *oauthSessionStore) BeginSave(state, provider string) error {
+	state = strings.TrimSpace(state)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if state == "" || provider == "" {
+		return errOAuthSessionNotPending
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.purgeExpiredLocked(now)
+	session, ok := s.sessions[state]
+	if !ok || session.Completed || !isOAuthSessionPendingStatus(session) {
+		return errOAuthSessionNotPending
+	}
+	if session.Saving {
+		return errOAuthSessionSaving
+	}
+	if !strings.EqualFold(session.Provider, provider) {
+		return errOAuthSessionNotPending
+	}
+	session.Saving = true
+	s.sessions[state] = session
+	return nil
+}
+
+func (s *oauthSessionStore) IsSaving(state, provider string) bool {
+	state = strings.TrimSpace(state)
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if state == "" {
+		return false
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.purgeExpiredLocked(now)
+	session, ok := s.sessions[state]
+	if !ok || session.Completed || !session.Saving {
+		return false
+	}
+	return provider == "" || strings.EqualFold(session.Provider, provider)
+}
+
+// Cancel removes a pending OAuth session so background waiters exit without saving credentials.
+// Returns true when a pending session was cancelled.
+func (s *oauthSessionStore) Cancel(state string) bool {
+	state = strings.TrimSpace(state)
+	if state == "" {
+		return false
+	}
+	now := time.Now()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.purgeExpiredLocked(now)
+	session, ok := s.sessions[state]
+	if !ok || session.Completed || session.Saving || !isOAuthSessionPendingStatus(session) {
+		return false
+	}
+	delete(s.sessions, state)
+	return true
 }
 
 func cloneOAuthSessionMetadata(in map[string]any) map[string]any {
@@ -283,6 +363,33 @@ func GetOAuthSessionDetails(state string) (provider string, status string, isPlu
 
 func IsOAuthSessionPending(state, provider string) bool {
 	return oauthSessions.IsPending(state, provider)
+}
+
+// guardOAuthSessionPendingForSave returns errOAuthSessionNotPending when the session
+// is no longer pending (cancelled, completed, errored, or expired).
+// Call immediately before persisting credentials so a cancel that races with token
+// exchange or metadata fetch cannot save credentials for a cancelled flow.
+func guardOAuthSessionPendingForSave(state, provider string) error {
+	if IsOAuthSessionPending(state, provider) {
+		return nil
+	}
+	return errOAuthSessionNotPending
+}
+
+func IsOAuthSessionSaving(state, provider string) bool {
+	return oauthSessions.IsSaving(state, provider)
+}
+
+// beginOAuthSessionSave atomically prevents cancellation from claiming success
+// once credential persistence has started.
+func beginOAuthSessionSave(state, provider string) error {
+	return oauthSessions.BeginSave(state, provider)
+}
+
+// CancelOAuthSession cancels a pending OAuth session by state.
+// Background callback and device-code waiters observe IsOAuthSessionPending as false and exit without saving credentials.
+func CancelOAuthSession(state string) bool {
+	return oauthSessions.Cancel(state)
 }
 
 func oauthSessionErrorWithCause(message string, cause error) string {
@@ -347,6 +454,10 @@ func NormalizeOAuthProvider(provider string) (string, error) {
 		return "github", nil
 	case "iflow":
 		return "iflow", nil
+	case "devin", "cognition":
+		return "devin", nil
+	case "meta", "muse":
+		return "meta", nil
 	default:
 		return "", errUnsupportedOAuthFlow
 	}
@@ -424,8 +535,27 @@ func writeOAuthCallbackFile(authDir, canonicalProvider, state, code, errorMessag
 	if err != nil {
 		return "", fmt.Errorf("marshal oauth callback payload: %w", err)
 	}
-	if err := os.WriteFile(filePath, data, 0o600); err != nil {
-		return "", fmt.Errorf("write oauth callback file: %w", err)
+	// Publish complete JSON atomically so background waiters cannot read a partial callback.
+	tmp, errCreate := os.CreateTemp(authDir, ".oauth-callback-*")
+	if errCreate != nil {
+		return "", fmt.Errorf("create oauth callback file: %w", errCreate)
+	}
+	tmpPath := tmp.Name()
+	defer func() {
+		if errRemove := os.Remove(tmpPath); errRemove != nil && !errors.Is(errRemove, os.ErrNotExist) {
+			log.Warn("failed to remove temporary OAuth callback file")
+		}
+	}()
+	_, errWrite := tmp.Write(data)
+	errClose := tmp.Close()
+	if errWrite != nil {
+		return "", fmt.Errorf("write oauth callback file: %w", errWrite)
+	}
+	if errClose != nil {
+		return "", fmt.Errorf("close oauth callback file: %w", errClose)
+	}
+	if errRename := os.Rename(tmpPath, filePath); errRename != nil {
+		return "", fmt.Errorf("publish oauth callback file: %w", errRename)
 	}
 	return filePath, nil
 }

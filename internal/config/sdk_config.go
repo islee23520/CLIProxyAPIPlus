@@ -6,8 +6,14 @@ package config
 
 // SDKConfig represents the application's configuration, loaded from a YAML file.
 type SDKConfig struct {
+	// CodexResponseSteering mirrors the provider-wide runtime setting for API handlers.
+	CodexResponseSteering bool `yaml:"-" json:"-"`
+
 	// ProxyURL is the URL of an optional proxy server to use for outbound requests.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
+
+	// Qoder configures provider-wide Qoder request behavior.
+	Qoder QoderConfig `yaml:"qoder" json:"qoder"`
 
 	// DisableImageGeneration controls whether the built-in image_generation tool is injected/allowed.
 	//
@@ -45,6 +51,15 @@ type SDKConfig struct {
 	// RequestLog enables or disables detailed request logging functionality.
 	RequestLog bool `yaml:"request-log" json:"request-log"`
 
+	// CodexOptimizeMultiAgentV2 mirrors the provider-wide runtime setting for API handlers.
+	CodexOptimizeMultiAgentV2 bool `yaml:"-" json:"-"`
+
+	// CodexOrphanDelegationCompatibility mirrors the provider-wide runtime setting for API handlers.
+	CodexOrphanDelegationCompatibility bool `yaml:"-" json:"-"`
+
+	// ClaudeCode configures Claude Code compatibility behavior.
+	ClaudeCode ClaudeCodeConfig `yaml:"claude-code" json:"claude-code"`
+
 	// APIKeys is a list of keys for authenticating clients to this proxy server.
 	APIKeys []string `yaml:"api-keys" json:"api-keys"`
 
@@ -60,9 +75,24 @@ type SDKConfig struct {
 	NonStreamKeepAliveInterval int `yaml:"nonstream-keepalive-interval,omitempty" json:"nonstream-keepalive-interval,omitempty"`
 }
 
+// QoderConfig configures Qoder provider endpoints.
+type QoderConfig struct {
+	// VPCEndpoint selects a Qoder CN Enterprise VPC deployment. It accepts either
+	// an instance name or its base, gateway, or OpenAPI domain. Empty keeps the
+	// public global Qoder endpoints.
+	VPCEndpoint string `yaml:"vpc-endpoint,omitempty" json:"vpc-endpoint,omitempty"`
+}
+
+// ClaudeCodeConfig configures Claude Code compatibility behavior.
+type ClaudeCodeConfig struct {
+	// DisableCloakingModelList disables model ID cloaking in Anthropic model list responses.
+	DisableCloakingModelList bool `yaml:"disable-cloaking-model-list" json:"disable-cloaking-model-list"`
+}
+
 // StreamingConfig holds server streaming behavior configuration.
 type StreamingConfig struct {
-	// KeepAliveSeconds controls how often the server emits SSE heartbeats (": keep-alive\n\n").
+	// KeepAliveSeconds controls how often the server emits SSE heartbeats (": keep-alive\n\n")
+	// or WebSocket Ping control frames.
 	// <= 0 disables keep-alives. Default is 0.
 	KeepAliveSeconds int `yaml:"keepalive-seconds,omitempty" json:"keepalive-seconds,omitempty"`
 
@@ -70,4 +100,11 @@ type StreamingConfig struct {
 	// to allow auth rotation / transient recovery.
 	// <= 0 disables bootstrap retries. Default is 0.
 	BootstrapRetries int `yaml:"bootstrap-retries,omitempty" json:"bootstrap-retries,omitempty"`
+
+	// StreamConnectTimeoutSeconds controls the maximum time to wait for connection/stream establishment from an upstream stream before timing out and failing over.
+	// <= 0 disables stream connect timeout. Default is 0.
+	StreamConnectTimeoutSeconds int `yaml:"stream-connect-timeout-seconds,omitempty" json:"stream-connect-timeout-seconds,omitempty"`
+
+	// StreamFirstChunkTimeoutSeconds is a deprecated alias for StreamConnectTimeoutSeconds.
+	StreamFirstChunkTimeoutSeconds int `yaml:"stream-first-chunk-timeout-seconds,omitempty" json:"stream-first-chunk-timeout-seconds,omitempty"`
 }

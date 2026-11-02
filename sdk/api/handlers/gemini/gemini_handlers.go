@@ -72,7 +72,7 @@ func (h *GeminiAPIHandler) GeminiModels(c *gin.Context) {
 		}
 		normalizedModels = append(normalizedModels, normalizedModel)
 	}
-	c.JSON(http.StatusOK, gin.H{
+	h.WriteModelListResponse(c, h.HandlerType(), gin.H{
 		"models": normalizedModels,
 	})
 }
@@ -163,6 +163,26 @@ func (h *GeminiAPIHandler) GeminiHandler(c *gin.Context) {
 	}
 }
 
+// pendingGeminiStreamError reports the error that must be surfaced when a
+// Gemini stream closes without any data. A closed data channel with a
+// buffered upstream error means the stream failed: returning nil here would
+// let the handler commit HTTP 200 headers for an empty stream. Mirrors
+// pendingClaudeStreamError in the Claude handler.
+func pendingGeminiStreamError(errChan <-chan *interfaces.ErrorMessage) *interfaces.ErrorMessage {
+	if errChan == nil {
+		return nil
+	}
+	select {
+	case errMsg, ok := <-errChan:
+		if !ok {
+			return nil
+		}
+		return errMsg
+	default:
+		return nil
+	}
+}
+
 // handleStreamGenerateContent handles streaming content generation requests for Gemini models.
 // This function establishes a Server-Sent Events connection and streams the generated content
 // back to the client in real-time. It supports both SSE format and direct streaming based
@@ -219,6 +239,15 @@ func (h *GeminiAPIHandler) handleStreamGenerateContent(c *gin.Context, modelName
 			return
 		case chunk, ok := <-dataChan:
 			if !ok {
+				if errMsg, hasPendingError := handlers.PendingStreamError(errChan); hasPendingError {
+					h.WriteErrorResponse(c, errMsg)
+					if errMsg != nil {
+						cliCancel(errMsg.Error)
+					} else {
+						cliCancel(nil)
+					}
+					return
+				}
 				// Closed without data
 				if alt == "" {
 					setSSEHeaders()

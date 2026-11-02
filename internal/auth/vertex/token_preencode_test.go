@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 )
 
 type failingCredentialMarshaler struct {
@@ -125,10 +127,14 @@ func TestVertexSaveTokenToFileKeepsEncoderFormatAndTruncatesExistingFile(t *test
 	}
 	expected := *storage
 	expected.Type = "vertex"
+	data, errMerge := misc.MergeMetadata(&expected, expected.Metadata)
+	if errMerge != nil {
+		t.Fatal(errMerge)
+	}
 	var want bytes.Buffer
 	enc := json.NewEncoder(&want)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(&expected); err != nil {
+	if err := enc.Encode(data); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), want.Len()+100), 0o600); err != nil {

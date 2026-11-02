@@ -11,12 +11,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"unsafe"
 
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/clienterror"
 	"golang.org/x/sys/windows"
 )
 
@@ -269,14 +271,29 @@ func (c *dynamicLibraryClient) Call(ctx context.Context, method string, request 
 	if len(request) > 0 {
 		requestPtr = uintptr(unsafe.Pointer(&request[0]))
 	}
-	var response windowsBuffer
+	responseMem, errAlloc := windows.LocalAlloc(
+		windows.LMEM_FIXED|windows.LMEM_ZEROINIT,
+		uint32(unsafe.Sizeof(windowsBuffer{})),
+	)
+	if errAlloc != nil {
+		return nil, fmt.Errorf("allocate plugin response buffer: %w", errAlloc)
+	}
+	if responseMem == 0 {
+		return nil, fmt.Errorf("allocate plugin response buffer")
+	}
+	defer func() {
+		_, _ = windows.LocalFree(windows.Handle(responseMem))
+	}()
+	response := (*windowsBuffer)(unsafe.Pointer(responseMem))
 	rc, _, _ := syscall.SyscallN(
 		c.api.call,
 		uintptr(unsafe.Pointer(methodBytes)),
 		requestPtr,
 		uintptr(len(request)),
-		uintptr(unsafe.Pointer(&response)),
+		responseMem,
 	)
+	runtime.KeepAlive(methodBytes)
+	runtime.KeepAlive(request)
 	var out []byte
 	if response.ptr != 0 && response.len > 0 {
 		out = unsafe.Slice((*byte)(unsafe.Pointer(response.ptr)), response.len)
@@ -353,7 +370,7 @@ func windowsHostCall(hostCtx uintptr, methodPtr uintptr, requestPtr uintptr, req
 	ctx := withHostCallbackPluginID(context.Background(), entry.pluginID)
 	resp, errCall := entry.host.callFromPlugin(ctx, windowsString(methodPtr), request)
 	if errCall != nil {
-		resp = marshalRPCError("host_call_failed", errCall.Error())
+		resp = marshalRPCError("host_call_failed", errCall.Error(), clienterror.HTTPStatusFromError(errCall))
 	}
 	if len(resp) == 0 || responsePtr == 0 {
 		return 0

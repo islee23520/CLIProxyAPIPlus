@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	kirocommon "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/kiro/common"
 	"github.com/tidwall/gjson"
 )
 
@@ -106,6 +107,117 @@ func TestBuildKiroPayload_NoToolsNoHistoryToolUse(t *testing.T) {
 	}
 }
 
+// TestBuildKiroPayload_TrailingSystemMessageKeepsTools reproduces the case
+// observed in production: Claude Code's mid-conversation-system beta appends a
+// role:"system" message as the FINAL entry of the messages array. Without
+// normalization the system message is skipped, no current user message is
+// produced, and the converted tools are silently dropped from the payload —
+// the model then hallucinates text-format tool calls.
+//
+// Expected behavior: the trailing system message is carried as user content
+// and the client-declared tools land on
+// currentMessage.userInputMessageContext.tools.
+func TestBuildKiroPayload_TrailingSystemMessageKeepsTools(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-6",
+		"max_tokens": 1024,
+		"tools": [
+			{"name": "Grep", "description": "search", "input_schema": {"type": "object", "properties": {"pattern": {"type": "string"}}}}
+		],
+		"messages": [
+			{"role": "user", "content": "investigate the revision conflict"},
+			{"role": "system", "content": "Available agent types for the Agent tool: ..."}
+		]
+	}`
+
+	out, _ := BuildKiroPayload([]byte(claudeReq), "claude-sonnet-4-6", "arn:test", "test", true, false, http.Header{}, nil)
+	if len(out) == 0 {
+		t.Fatal("expected non-empty payload")
+	}
+
+	tools := gjson.GetBytes(out, "conversationState.currentMessage.userInputMessage.userInputMessageContext.tools")
+	if !tools.IsArray() || len(tools.Array()) != 1 {
+		t.Fatalf("expected exactly 1 tool on currentMessage, got: %s", tools.Raw)
+	}
+	if got := tools.Array()[0].Get("toolSpecification.name").String(); got != "Grep" {
+		t.Fatalf("expected tool named 'Grep', got %q", got)
+	}
+
+	content := gjson.GetBytes(out, "conversationState.currentMessage.userInputMessage.content").String()
+	if !strings.Contains(content, "investigate the revision conflict") {
+		t.Fatalf("expected user text in current message content, got: %q", content)
+	}
+	if !strings.Contains(content, "Available agent types for the Agent tool") {
+		t.Fatalf("expected system message text carried into current message content, got: %q", content)
+	}
+	if !strings.Contains(content, "<system-reminder>") {
+		t.Fatalf("expected system text wrapped in <system-reminder> tags, got: %q", content)
+	}
+}
+
+func TestBuildKiroPayload_MidConversationSystemStringPreservesOrder(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-6",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": "first user turn"},
+			{"role": "assistant", "content": "first assistant turn"},
+			{"role": "system", "content": "mid-conversation instruction"},
+			{"role": "user", "content": "final user turn"}
+		]
+	}`
+
+	out, _ := BuildKiroPayload([]byte(claudeReq), "claude-sonnet-4-6", "arn:test", "test", false, true, http.Header{}, nil)
+	history := gjson.GetBytes(out, "conversationState.history").Array()
+	if len(history) != 2 {
+		t.Fatalf("expected user and assistant history entries, got %d: %s", len(history), string(out))
+	}
+	if got := history[0].Get("userInputMessage.content").String(); got != "first user turn" {
+		t.Fatalf("unexpected first history content: %q", got)
+	}
+	if got := history[1].Get("assistantResponseMessage.content").String(); got != "first assistant turn" {
+		t.Fatalf("unexpected second history content: %q", got)
+	}
+
+	current := gjson.GetBytes(out, "conversationState.currentMessage.userInputMessage.content").String()
+	want := "<system-reminder>\nmid-conversation instruction\n</system-reminder>\nfinal user turn"
+	if current != want {
+		t.Fatalf("system and final user content reordered or changed:\nwant %q\n got %q", want, current)
+	}
+}
+
+func TestBuildKiroPayload_MidConversationSystemArrayPreservesBlockOrder(t *testing.T) {
+	claudeReq := `{
+		"model": "claude-sonnet-4-6",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": "before system"},
+			{"role": "system", "content": [
+				{"type": "text", "text": "first system block"},
+				{"type": "text", "text": "second system block"}
+			]},
+			{"role": "assistant", "content": "assistant after system"},
+			{"role": "user", "content": "after assistant"}
+		]
+	}`
+
+	out, _ := BuildKiroPayload([]byte(claudeReq), "claude-sonnet-4-6", "arn:test", "test", false, true, http.Header{}, nil)
+	history := gjson.GetBytes(out, "conversationState.history").Array()
+	if len(history) != 2 {
+		t.Fatalf("expected merged user and assistant history entries, got %d: %s", len(history), string(out))
+	}
+	wantHistory := "before system\n<system-reminder>\nfirst system block\nsecond system block\n</system-reminder>"
+	if got := history[0].Get("userInputMessage.content").String(); got != wantHistory {
+		t.Fatalf("system blocks reordered or changed:\nwant %q\n got %q", wantHistory, got)
+	}
+	if got := history[1].Get("assistantResponseMessage.content").String(); got != "assistant after system" {
+		t.Fatalf("assistant order changed: %q", got)
+	}
+	if got := gjson.GetBytes(out, "conversationState.currentMessage.userInputMessage.content").String(); got != "after assistant" {
+		t.Fatalf("final user order changed: %q", got)
+	}
+}
+
 // TestSynthesizeToolSpecsFromHistory_Dedup ensures repeated tool names yield a
 // single stub.
 func TestSynthesizeToolSpecsFromHistory_Dedup(t *testing.T) {
@@ -130,5 +242,39 @@ func TestSynthesizeToolSpecsFromHistory_Dedup(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("expected %q in synthesized names %q", want, joined)
 		}
+	}
+}
+
+// TestBuildKiroPayload_OmitsPerRequestTimestampContext verifies that BuildKiroPayload
+// does not inject a dynamic "[Context: Current time is ...]" timestamp header into the system
+// prompt, preserving prefix caching on Kiro across turns (Issue #237).
+func TestBuildKiroPayload_OmitsPerRequestTimestampContext(t *testing.T) {
+	orig := kirocommon.IsSystemPromptInjectEnabled()
+	kirocommon.SetSystemPromptInjectEnabled(true)
+	defer kirocommon.SetSystemPromptInjectEnabled(orig)
+
+	claudeReq := `{
+		"model": "claude-sonnet-4-5",
+		"max_tokens": 1024,
+		"system": "You are an assistant.",
+		"messages": [
+			{"role": "user", "content": "hello"}
+		]
+	}`
+
+	out1, _ := BuildKiroPayload([]byte(claudeReq), "claude-sonnet-4-5", "arn:test", "test", false, false, http.Header{}, nil)
+	out2, _ := BuildKiroPayload([]byte(claudeReq), "claude-sonnet-4-5", "arn:test", "test", false, false, http.Header{}, nil)
+
+	content1 := gjson.GetBytes(out1, "conversationState.currentMessage.userInputMessage.content").String()
+	content2 := gjson.GetBytes(out2, "conversationState.currentMessage.userInputMessage.content").String()
+
+	if strings.Contains(content1, "[Context: Current time is") {
+		t.Fatalf("expected payload content to omit timestamp context, got: %s", content1)
+	}
+	if content1 != content2 {
+		t.Fatalf("expected consecutive payloads with identical prompts to be byte-identical, but got:\n1: %s\n2: %s", content1, content2)
+	}
+	if !strings.Contains(content1, "You are an assistant.") {
+		t.Fatalf("expected system prompt to be preserved, got: %s", content1)
 	}
 }

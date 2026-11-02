@@ -15,6 +15,20 @@ type ErrorMessage struct {
 	// Error is the underlying error that occurred.
 	Error error
 
-	// Addon contains additional headers to be added to the response.
+	// Addon contains upstream headers that may be passed through when enabled.
 	Addon http.Header
+
+	// DirectResponse reports that Body and Headers were explicitly supplied by a trusted in-process component.
+	DirectResponse bool
+
+	// TrustedDirectResponse reports that a DirectResponse originated locally
+	// (plugin/interceptor) and is safe to preserve through OpenAI sanitizers.
+	// Zero value false means the DirectResponse must be treated as untrusted.
+	TrustedDirectResponse bool
+
+	// Body contains a preformatted downstream response when DirectResponse is true.
+	Body []byte
+
+	// Headers contains downstream response headers when DirectResponse is true.
+	Headers http.Header
 }
