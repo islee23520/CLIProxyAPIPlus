@@ -1,0 +1,113 @@
+name: islee upstream sync
+run-name: islee-upstream-sync run=${{ github.run_number }}
+
+# Keeps this fork's main = kaitranntt/CLIProxyAPIPlus main + islee patches
+# (routing.disabled-auth-reroute, SO_REUSEPORT rolling slots, token pre-encode, tailnet relay).
+# Clean merge + build + tests green -> pushed to main.
+# Conflict or red gate -> branch sync/upstream-<sha> + PR labelled upstream-sync for manual resolution.
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: islee-upstream-sync
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: https://github.com/kaitranntt/CLIProxyAPIPlus.git
+  UPSTREAM_BRANCH: main
+
+jobs:
+  sync:
+    if: github.repository == 'islee23520/CLIProxyAPIPlus'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Fetch upstream
+        id: up
+        run: |
+          set -euo pipefail
+          git config user.name "islee-upstream-sync[bot]"
+          git config user.email "islee23520@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch --no-tags upstream "$UPSTREAM_BRANCH"
+          sha="$(git rev-parse "upstream/$UPSTREAM_BRANCH")"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "short=${sha:0:8}" >> "$GITHUB_OUTPUT"
+          if git merge-base --is-ancestor "$sha" HEAD; then
+            echo "behind=false" >> "$GITHUB_OUTPUT"
+            echo "main already contains upstream $sha"
+          else
+            echo "behind=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Merge upstream
+        id: merge
+        if: steps.up.outputs.behind == 'true'
+        run: |
+          set -uo pipefail
+          if git merge --no-edit -m "merge: upstream kaitranntt/CLIProxyAPIPlus ${{ steps.up.outputs.short }} into islee fork" "upstream/$UPSTREAM_BRANCH"; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U | tee conflicts.txt
+            git merge --abort
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-go@v5
+        if: steps.merge.outputs.clean == 'true'
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Gate (build + tests)
+        id: gate
+        if: steps.merge.outputs.clean == 'true'
+        run: |
+          set -uo pipefail
+          ok=true
+          CGO_ENABLED=1 go build ./... || ok=false
+          if $ok; then
+            # The fork feature must keep working on every upstream refresh.
+            go test -count=1 -run 'TestDisabledAuthReroute' ./sdk/cliproxy/auth/ || ok=false
+          fi
+          if $ok; then
+            go test -count=1 ./... 2>&1 | tee test.log | tail -50 || true
+            grep -q '^FAIL' test.log && ok=false
+          fi
+          echo "ok=$ok" >> "$GITHUB_OUTPUT"
+
+      - name: Push merged main
+        if: steps.gate.outputs.ok == 'true'
+        run: git push origin HEAD:main
+
+      - name: Open PR for manual resolution
+        if: steps.up.outputs.behind == 'true' && steps.gate.outputs.ok != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          branch="sync/upstream-${{ steps.up.outputs.short }}"
+          if [ "${{ steps.merge.outputs.clean }}" = "true" ]; then
+            reason="merge is clean but build/tests failed"
+          else
+            reason="merge conflicts: $(tr '\n' ' ' < conflicts.txt)"
+            git checkout -B "$branch" "upstream/$UPSTREAM_BRANCH"
+          fi
+          git push --force origin "HEAD:refs/heads/$branch"
+          gh label create upstream-sync --color FBCA04 2>/dev/null || true
+          if [ -z "$(gh pr list --head "$branch" --state open --json number --jq '.[0].number')" ]; then
+            gh pr create --base main --head "$branch" --label upstream-sync \
+              --title "upstream sync ${{ steps.up.outputs.short }} needs attention" \
+              --body "Automatic sync of kaitranntt/CLIProxyAPIPlus ${{ steps.up.outputs.sha }} stopped: ${reason}. Resolve keeping the islee patches (see README-islee.md) and make sure TestDisabledAuthReroute* stays green."
+          fi
