@@ -134,6 +134,21 @@ var oauthToolRenameMap = map[string]string{
 	"notebookedit": "NotebookEdit",
 }
 
+// oauthUpstreamToolName returns the Claude Code-style upstream name for a client
+// tool name. Besides the fixed map, lowercase "mcp_<tool>" names (single
+// underscore) are rewritten to the Claude Code MCP form "mcp__omo__<tool>":
+// Anthropic classifies OAuth requests carrying "mcp_"-prefixed tool names as
+// third-party traffic billed to extra usage, while "mcp__server__tool" passes.
+func oauthUpstreamToolName(name string) (string, bool) {
+	if newName, ok := oauthToolRenameMap[name]; ok && newName != name {
+		return newName, true
+	}
+	if strings.HasPrefix(name, "mcp_") && !strings.HasPrefix(name, "mcp__") && len(name) > len("mcp_") {
+		return "mcp__omo__" + name[len("mcp_"):], true
+	}
+	return "", false
+}
+
 // The reverse map is now computed per-request in remapOAuthToolNames so that
 // only names the client actually caused us to rewrite are restored on the
 // response. A global reverse map — as used previously — corrupted responses
@@ -710,7 +725,13 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		body = rebuildMidSystemMessagesToTopLevel(body)
 	}
 
-	if !strings.HasPrefix(baseModel, "claude-3-5-haiku") {
+	if helps.ClaudeAgentSDKProfile(resolveClaudeKeyCloakConfig(e.cfg, auth), auth) {
+		var errCloaking error
+		body, errCloaking = applyCloaking(ctx, e.cfg, auth, body, baseModel, apiKey)
+		if errCloaking != nil {
+			return cliproxyexecutor.Response{}, errCloaking
+		}
+	} else if !strings.HasPrefix(baseModel, "claude-3-5-haiku") {
 		body = checkSystemInstructions(body)
 	}
 
@@ -725,6 +746,9 @@ func (e *ClaudeExecutor) CountTokens(ctx context.Context, auth *cliproxyauth.Aut
 		body, _ = prepareClaudeOAuthToolNamesForUpstream(body, claudeToolPrefix, auth.ToolPrefixDisabled())
 	}
 	body = sanitizeClaudeMessagesForClaudeUpstreamWithDebug(ctx, body, baseModel)
+	if helps.ClaudeAgentSDKProfile(resolveClaudeKeyCloakConfig(e.cfg, auth), auth) && (isClaudeOAuthToken(apiKey) || experimentalCCHSigningEnabled(e.cfg, auth)) {
+		body = signAnthropicMessagesBody(body)
+	}
 
 	url := fmt.Sprintf("%s/v1/messages/count_tokens?beta=true", baseURL)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
@@ -1162,6 +1186,9 @@ func applyClaudeHeaders(r *http.Request, auth *cliproxyauth.Auth, apiKey string,
 		attrs = auth.Attributes
 	}
 	util.ApplyCustomHeadersFromAttrs(r, attrs)
+	if helps.ClaudeAgentSDKProfile(resolveClaudeKeyCloakConfig(cfg, auth), auth) {
+		r.Header.Set("User-Agent", helps.ClaudeAgentSDKUserAgent(r.Header.Get("User-Agent")))
+	}
 	// Re-enforce Accept-Encoding: identity after ApplyCustomHeadersFromAttrs, which
 	// may override it with a user-configured value.  Compressed SSE breaks the line
 	// scanner regardless of user preference, so this is non-negotiable for streams.
@@ -1364,7 +1391,7 @@ func remapOAuthToolNames(body []byte) ([]byte, map[string]string) {
 			}
 
 			toolJSON := tool.Raw
-			if newName, ok := oauthToolRenameMap[name]; ok && newName != name {
+			if newName, ok := oauthUpstreamToolName(name); ok {
 				updatedTool, err := sjson.Set(toolJSON, "name", newName)
 				if err == nil {
 					toolJSON = updatedTool
@@ -1391,7 +1418,7 @@ func remapOAuthToolNames(body []byte) ([]byte, map[string]string) {
 			// The chosen tool was removed from the tools array, so drop tool_choice to
 			// keep the payload internally consistent and fall back to normal auto tool use.
 			body, _ = sjson.DeleteBytes(body, "tool_choice")
-		} else if newName, ok := oauthToolRenameMap[tcName]; ok && newName != tcName {
+		} else if newName, ok := oauthUpstreamToolName(tcName); ok {
 			body, _ = sjson.SetBytes(body, "tool_choice.name", newName)
 			recordRename(tcName, newName)
 		}
@@ -1410,14 +1437,14 @@ func remapOAuthToolNames(body []byte) ([]byte, map[string]string) {
 				switch partType {
 				case "tool_use":
 					name := part.Get("name").String()
-					if newName, ok := oauthToolRenameMap[name]; ok && newName != name {
+					if newName, ok := oauthUpstreamToolName(name); ok {
 						path := fmt.Sprintf("messages.%d.content.%d.name", msgIndex.Int(), contentIndex.Int())
 						body, _ = sjson.SetBytes(body, path, newName)
 						recordRename(name, newName)
 					}
 				case "tool_reference":
 					toolName := part.Get("tool_name").String()
-					if newName, ok := oauthToolRenameMap[toolName]; ok && newName != toolName {
+					if newName, ok := oauthUpstreamToolName(toolName); ok {
 						path := fmt.Sprintf("messages.%d.content.%d.tool_name", msgIndex.Int(), contentIndex.Int())
 						body, _ = sjson.SetBytes(body, path, newName)
 						recordRename(toolName, newName)
@@ -1431,7 +1458,7 @@ func remapOAuthToolNames(body []byte) ([]byte, map[string]string) {
 						nestedContent.ForEach(func(nestedIndex, nestedPart gjson.Result) bool {
 							if nestedPart.Get("type").String() == "tool_reference" {
 								nestedToolName := nestedPart.Get("tool_name").String()
-								if newName, ok := oauthToolRenameMap[nestedToolName]; ok && newName != nestedToolName {
+								if newName, ok := oauthUpstreamToolName(nestedToolName); ok {
 									nestedPath := fmt.Sprintf("messages.%d.content.%d.content.%d.tool_name", msgIndex.Int(), contentIndex.Int(), nestedIndex.Int())
 									body, _ = sjson.SetBytes(body, nestedPath, newName)
 									recordRename(nestedToolName, newName)
@@ -2089,12 +2116,21 @@ func applyCloaking(ctx context.Context, cfg *config.Config, auth *cliproxyauth.A
 		return payload, nil
 	}
 
-	// Skip system instructions for claude-3-5-haiku models
-	if !strings.HasPrefix(model, "claude-3-5-haiku") {
+	// Preserve the legacy Haiku exception only for the Claude Code profile.
+	if helps.ClaudeAgentSDKProfile(cloakCfg, auth) || !strings.HasPrefix(model, "claude-3-5-haiku") {
 		billingVersion := helps.DefaultClaudeVersion(cfg)
 		entrypoint := parseEntrypointFromUA(clientUserAgent)
 		workload := getWorkloadFromContext(ctx)
-		payload = checkSystemInstructionsWithSigningMode(payload, strictMode, useCCHSigning, oauthToken, billingVersion, entrypoint, workload)
+		if helps.ClaudeAgentSDKProfile(cloakCfg, auth) {
+			messageText := gjson.GetBytes(payload, "system").String()
+			if gjson.GetBytes(payload, "system").IsArray() {
+				messageText = gjson.GetBytes(payload, "system.0.text").String()
+			}
+			billing := generateBillingHeader(payload, useCCHSigning, billingVersion, messageText, "sdk-ts", workload)
+			payload = helps.ApplyClaudeAgentSDKSystem(payload, billing)
+		} else {
+			payload = checkSystemInstructionsWithSigningMode(payload, strictMode, useCCHSigning, oauthToken, billingVersion, entrypoint, workload)
+		}
 	}
 
 	// Inject fake user ID

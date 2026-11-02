@@ -3,8 +3,10 @@
 package vertex
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -52,6 +54,12 @@ func (s *VertexCredentialStorage) SaveTokenToFile(authFilePath string) error {
 	if err := os.MkdirAll(filepath.Dir(authFilePath), 0o700); err != nil {
 		return fmt.Errorf("vertex credential: create directory failed: %w", err)
 	}
+	var payload bytes.Buffer
+	enc := json.NewEncoder(&payload)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(s); err != nil {
+		return fmt.Errorf("vertex credential: encode failed: %w", err)
+	}
 	f, err := os.Create(authFilePath)
 	if err != nil {
 		return fmt.Errorf("vertex credential: create file failed: %w", err)
@@ -61,10 +69,12 @@ func (s *VertexCredentialStorage) SaveTokenToFile(authFilePath string) error {
 			log.Errorf("vertex credential: failed to close file: %v", errClose)
 		}
 	}()
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err = enc.Encode(s); err != nil {
+	n, err := f.Write(payload.Bytes())
+	if err != nil {
 		return fmt.Errorf("vertex credential: encode failed: %w", err)
+	}
+	if n != payload.Len() {
+		return fmt.Errorf("vertex credential: encode failed: %w", io.ErrShortWrite)
 	}
 	return nil
 }

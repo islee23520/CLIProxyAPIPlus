@@ -57,6 +57,8 @@ func normalizeCodexServiceTier(result gjson.Result) string {
 	switch strings.ToLower(strings.TrimSpace(result.String())) {
 	case "fast", "priority":
 		return "priority"
+	case "ultrafast":
+		return "ultrafast"
 	default:
 		return ""
 	}

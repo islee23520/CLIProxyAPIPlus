@@ -19,6 +19,50 @@ func TestModelOverrideHeadersFromEmbeddedModels(t *testing.T) {
 	}
 }
 
+func TestIsCodexImageModel_AllowsGPTImage25Family(t *testing.T) {
+	for _, model := range []string{
+		"gpt-image-1.5", "codex/gpt-image-1.5",
+		"gpt-image-2", "codex/gpt-image-2",
+		"gpt-image-2.5", "codex/gpt-image-2.5",
+		"gpt-image-2.5-flare", "codex/gpt-image-2.5-flare",
+		"gpt-image-2.5-sunburst", "codex/gpt-image-2.5-sunburst",
+		"gpt-image-2.5-flare-2026-09-08",
+	} {
+		if !IsCodexImageModel(model) {
+			t.Fatalf("expected %s to be a Codex image model", model)
+		}
+	}
+	for _, model := range []string{"gpt-5.4-mini", "grok-imagine-image", "gpt-image"} {
+		if IsCodexImageModel(model) {
+			t.Fatalf("expected %s not to be a Codex image model", model)
+		}
+	}
+}
+
+func TestWithCodexBuiltinsIncludesGPTImage25Models(t *testing.T) {
+	models := WithCodexBuiltins(nil)
+	required := map[string]bool{
+		codexBuiltinImage15ModelID:         false,
+		codexBuiltinImageModelID:           false,
+		codexBuiltinImage25ModelID:         false,
+		codexBuiltinImage25FlareModelID:    false,
+		codexBuiltinImage25SunburstModelID: false,
+	}
+	for _, model := range models {
+		if model == nil {
+			continue
+		}
+		if _, ok := required[model.ID]; ok {
+			required[model.ID] = true
+		}
+	}
+	for modelID, found := range required {
+		if !found {
+			t.Fatalf("expected Codex builtin image model %s", modelID)
+		}
+	}
+}
+
 func TestWithXAIBuiltinsIncludesVideoPreviewModel(t *testing.T) {
 	models := WithXAIBuiltins(nil)
 

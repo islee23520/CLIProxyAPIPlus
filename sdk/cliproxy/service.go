@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/api"
@@ -103,7 +104,9 @@ type Service struct {
 	pluginHost *pluginhost.Host
 
 	// shutdownOnce ensures shutdown is called only once.
-	shutdownOnce sync.Once
+	shutdownOnce    sync.Once
+	shutdownStarted atomic.Bool
+	shutdownErr     error
 
 	// wsGateway manages websocket Gemini providers.
 	wsGateway *wsrelay.Manager
@@ -1661,9 +1664,9 @@ func (s *Service) Run(ctx context.Context) error {
 		redisqueue.SetUsageStatisticsEnabled(true)
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer shutdownCancel()
 	defer func() {
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
 		if err := s.Shutdown(shutdownCtx); err != nil {
 			log.Errorf("service shutdown returned error: %v", err)
 		}
@@ -1760,22 +1763,49 @@ func (s *Service) Run(ctx context.Context) error {
 		s.hooks.OnBeforeStart(s.cfg)
 	}
 
-	s.serverErr = make(chan error, 1)
-	go func() {
-		if errStart := s.server.Start(); errStart != nil {
-			s.serverErr <- errStart
-		} else {
-			s.serverErr <- nil
-		}
-	}()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.shutdownStarted.Load() {
+		return nil
+	}
 
-	time.Sleep(100 * time.Millisecond)
+	s.serverErr = make(chan error, 1)
+	ready := make(chan struct{})
+	go func(server *api.Server, ready chan<- struct{}, serverErr chan<- error) {
+		serverErr <- server.StartReady(ready)
+	}(s.server, ready, s.serverErr)
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case errServer := <-s.serverErr:
+		return errServer
+	case <-ready:
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case errServer := <-s.serverErr:
+		return errServer
+	default:
+	}
 	fmt.Printf("API server started successfully on: %s:%d\n", s.cfg.Host, s.cfg.Port)
 
 	s.applyPprofConfig(s.cfg)
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if s.hooks.OnAfterStart != nil {
 		s.hooks.OnAfterStart(s)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.shutdownStarted.Load() {
+		return nil
 	}
 
 	if !homeEnabled {
@@ -1836,6 +1866,7 @@ func (s *Service) Shutdown(ctx context.Context) error {
 	}
 	var shutdownErr error
 	s.shutdownOnce.Do(func() {
+		s.shutdownStarted.Store(true)
 		if ctx == nil {
 			ctx = context.Background()
 		}
@@ -1920,8 +1951,9 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		}
 
 		usage.StopDefault()
+		s.shutdownErr = shutdownErr
 	})
-	return shutdownErr
+	return s.shutdownErr
 }
 
 func (s *Service) ensureAuthDir() error {

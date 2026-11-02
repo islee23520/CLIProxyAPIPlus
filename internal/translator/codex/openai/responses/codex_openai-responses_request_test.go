@@ -233,6 +233,7 @@ func TestConvertOpenAIResponsesRequestToCodex_ServiceTier(t *testing.T) {
 	}{
 		{name: "priority passes through", serviceTier: "priority", want: "priority"},
 		{name: "fast normalizes to priority", serviceTier: "fast", want: "priority"},
+		{name: "ultrafast passes through", serviceTier: "ultrafast", want: "ultrafast"},
 		{name: "invalid tier is stripped", serviceTier: "default", want: ""},
 	}
 

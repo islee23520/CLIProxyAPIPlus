@@ -2977,6 +2977,40 @@ func TestRemapOAuthToolNames_MixedCase_OnlyRenamedToolsReversed(t *testing.T) {
 	}
 }
 
+// TestRemapOAuthToolNames_SingleUnderscoreMCPPrefix_RenamedAndRestored covers
+// "mcp_<tool>" names, which Anthropic classifies as third-party OAuth traffic.
+// They must reach upstream in Claude Code MCP form and come back unchanged,
+// while names already in "mcp__server__tool" form pass through untouched.
+func TestRemapOAuthToolNames_SingleUnderscoreMCPPrefix_RenamedAndRestored(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"mcp_blender_look","input_schema":{"type":"object"}},{"name":"mcp__github__search","input_schema":{"type":"object"}}],` +
+		`"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"mcp_blender_look","input":{}}]}]}`)
+
+	out, reverseMap := remapOAuthToolNames(body)
+	if got := gjson.GetBytes(out, "tools.0.name").String(); got != "mcp__omo__blender_look" {
+		t.Fatalf("tools.0.name = %q, want %q", got, "mcp__omo__blender_look")
+	}
+	if got := gjson.GetBytes(out, "tools.1.name").String(); got != "mcp__github__search" {
+		t.Fatalf("tools.1.name = %q, want unchanged double-underscore name", got)
+	}
+	if got := gjson.GetBytes(out, "messages.0.content.0.name").String(); got != "mcp__omo__blender_look" {
+		t.Fatalf("history tool_use name = %q, want %q", got, "mcp__omo__blender_look")
+	}
+
+	resp := []byte(`{"content":[{"type":"tool_use","id":"toolu_02","name":"mcp__omo__blender_look","input":{}},{"type":"tool_use","id":"toolu_03","name":"mcp__github__search","input":{}}]}`)
+	reversed := reverseRemapOAuthToolNames(resp, reverseMap)
+	if got := gjson.GetBytes(reversed, "content.0.name").String(); got != "mcp_blender_look" {
+		t.Fatalf("content.0.name = %q, want client name %q", got, "mcp_blender_look")
+	}
+	if got := gjson.GetBytes(reversed, "content.1.name").String(); got != "mcp__github__search" {
+		t.Fatalf("content.1.name = %q, want unchanged %q", got, "mcp__github__search")
+	}
+
+	line := []byte(`data: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"toolu_04","name":"mcp__omo__blender_look","input":{}}}`)
+	if got := gjson.GetBytes(helps.JSONPayload(reverseRemapOAuthToolNamesFromStreamLine(line, reverseMap)), "content_block.name").String(); got != "mcp_blender_look" {
+		t.Fatalf("stream content_block.name = %q, want %q", got, "mcp_blender_look")
+	}
+}
+
 // TestReverseRemapOAuthToolNamesFromStreamLine_HonorsPerRequestMap guards the
 // SSE streaming code path against the same mixed-case bug.
 func TestReverseRemapOAuthToolNamesFromStreamLine_HonorsPerRequestMap(t *testing.T) {

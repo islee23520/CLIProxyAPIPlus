@@ -44,6 +44,7 @@ const (
 	xaiNamespaceToolType       = "namespace"
 	xaiToolSearchType          = "tool_search"
 	xaiWebSearchToolType       = "web_search"
+	xaiXSearchToolType         = "x_search"
 	// Codex Desktop injects codex_app.automation_update with a large oneOf+$ref
 	// schema. xAI's free/build Responses path accepts the HTTP request but never
 	// emits SSE when that schema is present, so Desktop hangs on "thinking".
@@ -61,6 +62,9 @@ const (
 	xaiIdempotencyKeyMetaKey    = "idempotency_key"
 	xaiComposerModelPrefix      = "grok-composer-"
 )
+
+// xaiXSearchToolJSON is the native X Search tool injected when xai.inject-x-search is true.
+var xaiXSearchToolJSON = []byte(`{"type":"x_search"}`)
 
 // XAIExecutor is a stateless executor for xAI Grok's Responses API.
 type XAIExecutor struct {
@@ -846,6 +850,9 @@ func (e *XAIExecutor) prepareResponsesRequestTo(ctx context.Context, req cliprox
 	body, _ = sjson.DeleteBytes(body, "stream_options")
 	body = normalizeXAITools(body)
 	body = normalizeXAIToolChoiceForTools(body)
+	if e.cfg != nil && e.cfg.XAI.InjectXSearch {
+		body = ensureXAINativeXSearchTool(body)
+	}
 	var replayScope xaiReasoningReplayScope
 	body, replayScope, err = applyXAIReasoningReplayCacheRequired(ctx, from, req, opts, body)
 	if err != nil {
@@ -912,7 +919,20 @@ func xaiCreds(auth *cliproxyauth.Auth) (token, baseURL string) {
 			baseURL = xaiMetadataString(auth.Metadata, "base_url")
 		}
 	}
-	return token, baseURL
+	return token, xaiSubscriptionBaseURL(baseURL)
+}
+
+// xaiSubscriptionBaseURL sends OAuth model calls to the Grok subscription proxy.
+// Stored auth files still say api.x.ai; that host bills the API key path and
+// does not roll the SuperGrok window.
+func xaiSubscriptionBaseURL(baseURL string) string {
+	trimmed := strings.TrimSuffix(strings.TrimSpace(baseURL), "/")
+	switch trimmed {
+	case "", xaiauth.DefaultAPIBaseURL, strings.TrimSuffix(xaiauth.DefaultAPIBaseURL, "/v1"):
+		return xaiauth.SubscriptionAPIBaseURL
+	default:
+		return trimmed
+	}
 }
 
 func applyXAIHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, stream bool, sessionID string) {
@@ -928,6 +948,10 @@ func applyXAIHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, str
 	r.Header.Set("Connection", "Keep-Alive")
 	if sessionID != "" {
 		r.Header.Set("x-grok-conv-id", sessionID)
+	}
+	if strings.Contains(r.URL.Host, "cli-chat-proxy.grok.com") {
+		r.Header.Set("x-xai-token-auth", "xai-grok-cli")
+		r.Header.Set("x-grok-client-version", "0.2.91")
 	}
 	var attrs map[string]string
 	if auth != nil {
@@ -1646,4 +1670,48 @@ func xaiStatusErr(code int, body []byte) statusErr {
 		err.retryAfter = &d
 	}
 	return err
+}
+
+func xaiRequestHasNativeXSearch(body []byte) bool {
+	if gjson.GetBytes(body, `tools.#(type=="x_search")`).Exists() {
+		return true
+	}
+	return len(gjson.GetBytes(body, `input.#(type=="additional_tools")#.tools.#(type=="x_search")`).Array()) > 0
+}
+
+// ensureXAINativeXSearchTool appends {"type":"x_search"} when the tools list
+// does not already include native X Search. When tool_choice restricts the
+// model to allowed_tools, x_search is also added there so Grok can select it.
+func ensureXAINativeXSearchTool(body []byte) []byte {
+	if !gjson.ValidBytes(body) {
+		return body
+	}
+	if !xaiRequestHasNativeXSearch(body) {
+		tools := gjson.GetBytes(body, "tools")
+		if !tools.Exists() || !tools.IsArray() {
+			body, _ = sjson.SetRawBytes(body, "tools", []byte(`[{"type":"x_search"}]`))
+		} else {
+			body, _ = sjson.SetRawBytes(body, "tools.-1", xaiXSearchToolJSON)
+		}
+	}
+	return ensureXAINativeXSearchAllowedTools(body)
+}
+
+func ensureXAINativeXSearchAllowedTools(body []byte) []byte {
+	choice := gjson.GetBytes(body, "tool_choice")
+	if !choice.IsObject() || choice.Get("type").String() != "allowed_tools" {
+		return body
+	}
+	allowed := choice.Get("tools")
+	if !allowed.Exists() || !allowed.IsArray() {
+		body, _ = sjson.SetRawBytes(body, "tool_choice.tools", []byte(`[{"type":"x_search"}]`))
+		return body
+	}
+	for _, tool := range allowed.Array() {
+		if strings.TrimSpace(tool.Get("type").String()) == xaiXSearchToolType {
+			return body
+		}
+	}
+	body, _ = sjson.SetRawBytes(body, "tool_choice.tools.-1", xaiXSearchToolJSON)
+	return body
 }

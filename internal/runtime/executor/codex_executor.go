@@ -801,6 +801,7 @@ func (e *CodexExecutor) Execute(ctx context.Context, auth *cliproxyauth.Auth, re
 		return resp, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexRoutingHint(httpReq.Header, auth, baseModel, upstreamBody)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
@@ -974,6 +975,7 @@ func (e *CodexExecutor) executeCompact(ctx context.Context, auth *cliproxyauth.A
 		return resp, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, false, e.cfg)
+	applyCodexRoutingHint(httpReq.Header, auth, baseModel, upstreamBody)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
@@ -1089,6 +1091,7 @@ func (e *CodexExecutor) ExecuteStream(ctx context.Context, auth *cliproxyauth.Au
 		return nil, err
 	}
 	applyCodexHeaders(httpReq, auth, apiKey, true, e.cfg)
+	applyCodexRoutingHint(httpReq.Header, auth, baseModel, upstreamBody)
 	applyModelHeaderOverrides(httpReq.Header, baseModel)
 	applyCodexIdentityConfuseHeaders(httpReq.Header, &identityState)
 	var authID, authLabel, authType, authValue string
@@ -1589,6 +1592,28 @@ func applyCodexHeaders(r *http.Request, auth *cliproxyauth.Auth, token string, s
 		ginHeaders = ginCtx.Request.Header
 	}
 	applyCodexHeadersFromSources(r, auth, token, stream, cfg, ginHeaders)
+}
+
+const codexRoutingHintHeader = "X-Codex-Routing-Hint"
+
+// applyCodexRoutingHint mirrors native Codex routing for ChatGPT OAuth requests.
+// The request body remains authoritative; this header makes the selected service
+// tier explicit to the upstream router for priority and ultrafast requests.
+func applyCodexRoutingHint(headers http.Header, auth *cliproxyauth.Auth, baseModel string, upstreamBody []byte) {
+	if headers == nil || codexAuthUsesAPIKey(auth) || strings.TrimSpace(headers.Get(codexRoutingHintHeader)) != "" {
+		return
+	}
+	model := strings.TrimSpace(baseModel)
+	if model == "" {
+		return
+	}
+	hint := "model=" + model
+	if tier := gjson.GetBytes(upstreamBody, "service_tier"); tier.Type == gjson.String {
+		if value := strings.TrimSpace(tier.String()); value != "" {
+			hint += ";tier=" + value
+		}
+	}
+	headers.Set(codexRoutingHintHeader, hint)
 }
 
 // applyModelHeaderOverrides forces models.json config.override_header onto upstream headers.

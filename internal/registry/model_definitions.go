@@ -7,12 +7,15 @@ import (
 )
 
 const (
-	codexBuiltinImage15ModelID      = "gpt-image-1.5"
-	codexBuiltinImageModelID        = "gpt-image-2"
-	xaiBuiltinImageModelID          = "grok-imagine-image"
-	xaiBuiltinImageQualityModelID   = "grok-imagine-image-quality"
-	xaiBuiltinVideoModelID          = "grok-imagine-video"
-	xaiBuiltinVideo15PreviewModelID = "grok-imagine-video-1.5-preview"
+	codexBuiltinImage15ModelID         = "gpt-image-1.5"
+	codexBuiltinImageModelID           = "gpt-image-2"
+	codexBuiltinImage25ModelID         = "gpt-image-2.5"
+	codexBuiltinImage25FlareModelID    = "gpt-image-2.5-flare"
+	codexBuiltinImage25SunburstModelID = "gpt-image-2.5-sunburst"
+	xaiBuiltinImageModelID             = "grok-imagine-image"
+	xaiBuiltinImageQualityModelID      = "grok-imagine-image-quality"
+	xaiBuiltinVideoModelID             = "grok-imagine-video"
+	xaiBuiltinVideo15PreviewModelID    = "grok-imagine-video-1.5-preview"
 )
 
 // staticModelsJSON mirrors the top-level structure of models.json.
@@ -121,7 +124,37 @@ func GetXAIModels() []*ModelInfo {
 // not depend on remote models.json updates. Built-ins replace any matching IDs
 // already present in the provided slice.
 func WithCodexBuiltins(models []*ModelInfo) []*ModelInfo {
-	return upsertModelInfos(models, codexBuiltinImage15ModelInfo(), codexBuiltinImageModelInfo())
+	return upsertModelInfos(models, codexBuiltinImageModels()...)
+}
+
+// IsCodexImageModel reports whether model is a Codex-hosted GPT Image tool model.
+// Dated gpt-image-2.5 snapshots such as gpt-image-2.5-flare-2026-09-08 match the 2.5- prefix.
+func IsCodexImageModel(model string) bool {
+	base := codexImageModelBase(model)
+	switch base {
+	case codexBuiltinImage15ModelID, codexBuiltinImageModelID, codexBuiltinImage25ModelID:
+		return true
+	default:
+		return strings.HasPrefix(base, codexBuiltinImage25ModelID+"-")
+	}
+}
+
+func codexImageModelBase(model string) string {
+	model = strings.TrimSpace(model)
+	if idx := strings.LastIndex(model, "/"); idx >= 0 && idx < len(model)-1 {
+		model = strings.TrimSpace(model[idx+1:])
+	}
+	return strings.ToLower(model)
+}
+
+func codexBuiltinImageModels() []*ModelInfo {
+	return []*ModelInfo{
+		codexBuiltinImageModelInfo(codexBuiltinImage15ModelID, "GPT Image 1.5"),
+		codexBuiltinImageModelInfo(codexBuiltinImageModelID, "GPT Image 2"),
+		codexBuiltinImageModelInfo(codexBuiltinImage25ModelID, "GPT Image 2.5"),
+		codexBuiltinImageModelInfo(codexBuiltinImage25FlareModelID, "GPT Image 2.5 Flare"),
+		codexBuiltinImageModelInfo(codexBuiltinImage25SunburstModelID, "GPT Image 2.5 Sunburst"),
+	}
 }
 
 // WithXAIBuiltins injects hard-coded xAI image/video model definitions that should
@@ -138,27 +171,15 @@ func normalizeAntigravityCapabilityModelID(modelID string) string {
 	return modelID
 }
 
-func codexBuiltinImage15ModelInfo() *ModelInfo {
+func codexBuiltinImageModelInfo(id, displayName string) *ModelInfo {
 	return &ModelInfo{
-		ID:          codexBuiltinImage15ModelID,
+		ID:          id,
 		Object:      "model",
 		Created:     1704067200, // 2024-01-01
 		OwnedBy:     "openai",
 		Type:        "openai",
-		DisplayName: "GPT Image 1.5",
-		Version:     codexBuiltinImage15ModelID,
-	}
-}
-
-func codexBuiltinImageModelInfo() *ModelInfo {
-	return &ModelInfo{
-		ID:          codexBuiltinImageModelID,
-		Object:      "model",
-		Created:     1704067200, // 2024-01-01
-		OwnedBy:     "openai",
-		Type:        "openai",
-		DisplayName: "GPT Image 2",
-		Version:     codexBuiltinImageModelID,
+		DisplayName: displayName,
+		Version:     id,
 	}
 }
 

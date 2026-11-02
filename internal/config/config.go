@@ -164,6 +164,9 @@ type Config struct {
 	// Codex configures provider-wide Codex request behavior.
 	Codex CodexConfig `yaml:"codex" json:"codex"`
 
+	// XAI configures provider-wide xAI request behavior.
+	XAI XAIConfig `yaml:"xai" json:"xai"`
+
 	// CodexHeaderDefaults configures fallback headers for Codex OAuth model requests.
 	// These are used only when the client does not send its own headers.
 	CodexHeaderDefaults CodexHeaderDefaults `yaml:"codex-header-defaults" json:"codex-header-defaults"`
@@ -328,6 +331,13 @@ type CodexConfig struct {
 	IdentityConfuse bool `yaml:"identity-confuse" json:"identity-confuse"`
 }
 
+// XAIConfig configures provider-wide xAI request behavior.
+type XAIConfig struct {
+	// InjectXSearch injects xAI's native x_search tool when the request does not declare it.
+	// The injected tool is also added to tool_choice.allowed_tools when applicable.
+	InjectXSearch bool `yaml:"inject-x-search" json:"inject-x-search"`
+}
+
 // TLSConfig holds HTTPS server settings.
 type TLSConfig struct {
 	// Enable toggles HTTPS server mode.
@@ -352,6 +362,8 @@ type RemoteManagement struct {
 	AllowRemote bool `yaml:"allow-remote"`
 	// SecretKey is the management key (plaintext or bcrypt hashed). YAML key intentionally 'secret-key'.
 	SecretKey string `yaml:"secret-key"`
+	// TrustedIPs exempt only these client IPs from management authentication failure bans.
+	TrustedIPs []string `yaml:"trusted-ips"`
 	// DisableControlPanel skips serving and syncing the bundled management UI when true.
 	DisableControlPanel bool `yaml:"disable-control-panel"`
 	// DisableAutoUpdatePanel disables automatic periodic background updates of the management panel asset from GitHub.
@@ -484,6 +496,9 @@ type PayloadModelRule struct {
 // CloakConfig configures request cloaking for non-Claude-Code clients.
 // Cloaking disguises API requests to appear as originating from the official Claude Code CLI.
 type CloakConfig struct {
+	// Profile selects "claude-code" (default) or "agent-sdk" request identity.
+	Profile string `yaml:"profile,omitempty" json:"profile,omitempty"`
+
 	// Mode controls cloaking behavior: "auto" (default), "always", or "never".
 	// - "auto": cloak only when client is not Claude Code (based on User-Agent)
 	// - "always": always apply cloaking regardless of client

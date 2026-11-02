@@ -529,6 +529,11 @@ func TestHandlerProvidersForExecutionRejectsImageOnlyModelOnProviderRoute(t *tes
 			originalModel: "gpt-image-2(auto)",
 			decision:      modelRouteDecision{Provider: "claude"},
 		},
+		{
+			name:          "gpt-image-2.5-sunburst",
+			originalModel: "original-model",
+			decision:      modelRouteDecision{Provider: "claude", Model: "gpt-image-2.5-sunburst"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

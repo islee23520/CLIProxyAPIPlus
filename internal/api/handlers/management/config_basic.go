@@ -1,6 +1,7 @@
 package management
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,10 +20,32 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const (
-	latestReleaseURL       = "https://api.github.com/repos/router-for-me/CLIProxyAPIPlus/releases/latest"
-	latestReleaseUserAgent = "CLIProxyAPIPlus"
+// The original router-for-me/CLIProxyAPIPlus repository was deleted; releases are
+// published by the maintained fork (see README-ccs-fork.md).
+var (
+	latestReleaseURL     = "https://api.github.com/repos/kaitranntt/CLIProxyAPIPlus/releases/latest"
+	latestReleasePageURL = "https://github.com/kaitranntt/CLIProxyAPIPlus/releases/latest"
 )
+
+const (
+	latestReleaseUserAgent = "CLIProxyAPIPlus"
+	latestVersionCacheTTL  = 10 * time.Minute
+)
+
+// latestVersionCache keeps the last successful lookup so repeated update checks
+// do not exhaust the unauthenticated GitHub API rate limit.
+var latestVersionCache struct {
+	sync.Mutex
+	version   string
+	fetchedAt time.Time
+}
+
+type latestVersionError struct {
+	code    string
+	message string
+}
+
+func (e *latestVersionError) Error() string { return e.code + ": " + e.message }
 
 func (h *Handler) GetConfig(c *gin.Context) {
 	if h == nil || h.cfg == nil {
@@ -37,7 +61,16 @@ type releaseInfo struct {
 }
 
 // GetLatestVersion returns the latest release version from GitHub without downloading assets.
+// When the GitHub API fails (for example 403/429 rate limiting), it falls back to the
+// redirect of the public releases/latest page, which is not subject to API rate limits.
 func (h *Handler) GetLatestVersion(c *gin.Context) {
+	latestVersionCache.Lock()
+	defer latestVersionCache.Unlock()
+	if latestVersionCache.version != "" && time.Since(latestVersionCache.fetchedAt) < latestVersionCacheTTL {
+		c.JSON(http.StatusOK, gin.H{"latest-version": latestVersionCache.version})
+		return
+	}
+
 	client := &http.Client{Timeout: 10 * time.Second}
 	proxyURL := ""
 	if h != nil && h.cfg != nil {
@@ -48,18 +81,37 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		util.SetProxy(sdkCfg, client)
 	}
 
-	req, err := http.NewRequestWithContext(c.Request.Context(), http.MethodGet, latestReleaseURL, nil)
+	version, errAPI := fetchLatestVersionFromAPI(c.Request.Context(), client)
+	if errAPI != nil {
+		pageVersion, errPage := fetchLatestVersionFromReleasePage(c.Request.Context(), client)
+		if errPage != nil {
+			log.WithError(errPage).Debug("latest version release page fallback failed")
+			status := http.StatusBadGateway
+			if errAPI.code == "request_create_failed" {
+				status = http.StatusInternalServerError
+			}
+			c.JSON(status, gin.H{"error": errAPI.code, "message": errAPI.message})
+			return
+		}
+		version = pageVersion
+	}
+
+	latestVersionCache.version = version
+	latestVersionCache.fetchedAt = time.Now()
+	c.JSON(http.StatusOK, gin.H{"latest-version": version})
+}
+
+func fetchLatestVersionFromAPI(ctx context.Context, client *http.Client) (string, *latestVersionError) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestReleaseURL, nil)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "request_create_failed", "message": err.Error()})
-		return
+		return "", &latestVersionError{code: "request_create_failed", message: err.Error()}
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", latestReleaseUserAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "request_failed", "message": err.Error()})
-		return
+		return "", &latestVersionError{code: "request_failed", message: err.Error()}
 	}
 	defer func() {
 		if errClose := resp.Body.Close(); errClose != nil {
@@ -69,14 +121,12 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		c.JSON(http.StatusBadGateway, gin.H{"error": "unexpected_status", "message": fmt.Sprintf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))})
-		return
+		return "", &latestVersionError{code: "unexpected_status", message: fmt.Sprintf("status %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))}
 	}
 
 	var info releaseInfo
 	if errDecode := json.NewDecoder(resp.Body).Decode(&info); errDecode != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "decode_failed", "message": errDecode.Error()})
-		return
+		return "", &latestVersionError{code: "decode_failed", message: errDecode.Error()}
 	}
 
 	version := strings.TrimSpace(info.TagName)
@@ -84,11 +134,43 @@ func (h *Handler) GetLatestVersion(c *gin.Context) {
 		version = strings.TrimSpace(info.Name)
 	}
 	if version == "" {
-		c.JSON(http.StatusBadGateway, gin.H{"error": "invalid_response", "message": "missing release version"})
-		return
+		return "", &latestVersionError{code: "invalid_response", message: "missing release version"}
 	}
+	return version, nil
+}
 
-	c.JSON(http.StatusOK, gin.H{"latest-version": version})
+// fetchLatestVersionFromReleasePage resolves the latest tag from the
+// "/releases/latest" -> "/releases/tag/<tag>" redirect of the GitHub web UI.
+func fetchLatestVersionFromReleasePage(ctx context.Context, client *http.Client) (string, error) {
+	noRedirect := *client
+	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, latestReleasePageURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("create release page request: %w", err)
+	}
+	req.Header.Set("User-Agent", latestReleaseUserAgent)
+
+	resp, err := noRedirect.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("request release page: %w", err)
+	}
+	defer func() {
+		if errClose := resp.Body.Close(); errClose != nil {
+			log.WithError(errClose).Debug("failed to close release page response body")
+		}
+	}()
+
+	location, err := resp.Location()
+	if err != nil {
+		return "", fmt.Errorf("release page returned status %d without redirect", resp.StatusCode)
+	}
+	_, tag, found := strings.Cut(location.Path, "/releases/tag/")
+	tag = strings.Trim(tag, "/")
+	if !found || tag == "" {
+		return "", fmt.Errorf("unexpected release page redirect %q", location.String())
+	}
+	return tag, nil
 }
 
 func WriteConfig(path string, data []byte) error {

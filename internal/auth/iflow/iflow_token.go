@@ -1,8 +1,10 @@
 package iflow
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -40,20 +42,29 @@ func (ts *IFlowTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("iflow token: create directory failed: %w", err)
 	}
 
-	f, err := os.Create(authFilePath)
-	if err != nil {
-		return fmt.Errorf("iflow token: create file failed: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
 	// Merge metadata using helper
 	data, errMerge := misc.MergeMetadata(ts, ts.Metadata)
 	if errMerge != nil {
 		return fmt.Errorf("failed to merge metadata: %w", errMerge)
 	}
 
-	if err = json.NewEncoder(f).Encode(data); err != nil {
+	var buffer bytes.Buffer
+	if err := json.NewEncoder(&buffer).Encode(data); err != nil {
 		return fmt.Errorf("iflow token: encode token failed: %w", err)
+	}
+
+	f, err := os.Create(authFilePath)
+	if err != nil {
+		return fmt.Errorf("iflow token: create file failed: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+
+	n, errWrite := f.Write(buffer.Bytes())
+	if errWrite != nil {
+		return fmt.Errorf("iflow token: encode token failed: %w", errWrite)
+	}
+	if n != buffer.Len() {
+		return fmt.Errorf("iflow token: encode token failed: %w", io.ErrShortWrite)
 	}
 	return nil
 }

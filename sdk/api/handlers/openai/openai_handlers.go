@@ -68,7 +68,9 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 	// Get all available models
 	allModels := h.Models()
 
-	// Filter to only include the 4 required fields: id, object, created, owned_by
+	// Base OpenAI fields: id, object, created, owned_by. Context window
+	// metadata is preserved so clients can size sessions and compaction
+	// correctly instead of hardcoding per-model values.
 	filteredModels := make([]map[string]any, len(allModels))
 	for i, model := range allModels {
 		filteredModel := map[string]any{
@@ -84,6 +86,14 @@ func (h *OpenAIAPIHandler) OpenAIModels(c *gin.Context) {
 		// Add owned_by field if it exists
 		if ownedBy, exists := model["owned_by"]; exists {
 			filteredModel["owned_by"] = ownedBy
+		}
+
+		if contextLength, exists := model["context_length"]; exists {
+			filteredModel["context_length"] = contextLength
+		}
+
+		if maxCompletionTokens, exists := model["max_completion_tokens"]; exists {
+			filteredModel["max_completion_tokens"] = maxCompletionTokens
 		}
 
 		filteredModels[i] = filteredModel

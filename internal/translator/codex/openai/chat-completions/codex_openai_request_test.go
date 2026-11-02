@@ -6,6 +6,26 @@ import (
 	"github.com/tidwall/gjson"
 )
 
+func TestConvertOpenAIRequestToCodexServiceTier(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "priority", input: "priority", want: "priority"},
+		{name: "fast", input: "fast", want: "priority"},
+		{name: "ultrafast", input: "ultrafast", want: "ultrafast"},
+		{name: "default omitted", input: "default", want: ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			output := ConvertOpenAIRequestToCodex("gpt-6.1-sol", []byte(`{"messages":[{"role":"user","content":"hi"}],"service_tier":"`+tt.input+`"}`), false)
+			if got := gjson.GetBytes(output, "service_tier").String(); got != tt.want {
+				t.Fatalf("service_tier = %q, want %q. Output: %s", got, tt.want, string(output))
+			}
+		})
+	}
+}
+
 // Basic tool-call: system + user + assistant(tool_calls, no content) + tool result.
 // Expects developer msg + user msg + function_call + function_call_output.
 // No empty assistant message should appear between user and function_call.

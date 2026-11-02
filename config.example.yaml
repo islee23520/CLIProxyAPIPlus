@@ -290,12 +290,13 @@ nonstream-keepalive-interval: 0
 #       - "*haiku*"                  # wildcard matching substring (e.g. claude-3-5-haiku-20241022)
 #     rebuild-mid-system-message: false # optional: default is false; when true, move messages with role "system" into the top-level Claude system field
 #     cloak:                         # optional: request cloaking for non-Claude-Code clients
+#       profile: "claude-code"       # default; "agent-sdk" uses sdk-ts identity and preserves caller system instructions (even in strict mode)
 #       mode: "auto"                 # "auto" (default): cloak only when client is not Claude Code
 #                                    # "always": always apply cloaking
 #                                    # "never": never apply cloaking
 #       # This "cloak" block applies to this claude-api-key entry only. For Claude OAuth
 #       # credentials, set the same options in the auth/token JSON file via "cloak_mode" /
-#       # "cloak_strict_mode" / "cloak_sensitive_words" / "cloak_cache_user_id". The top-level
+#       # "cloak_profile" / "cloak_strict_mode" / "cloak_sensitive_words" / "cloak_cache_user_id". The top-level
 #       # "disable-claude-cloak-mode: true" disables cloaking for all Claude credentials at once.
 #       strict-mode: false           # false (default): prepend Claude Code prompt to user system messages
 #                                    # true: strip all user system messages, keep only Claude Code prompt

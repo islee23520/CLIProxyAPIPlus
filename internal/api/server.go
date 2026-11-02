@@ -195,6 +195,11 @@ func WithExampleAPIKeySafeMode() ServerOption {
 // Server represents the main API server.
 // It encapsulates the Gin engine, HTTP server, handlers, and configuration.
 type Server struct {
+	// lifecycleMu guards startup ownership, shutdown, and listener publication.
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
+
 	// engine is the Gin web framework engine instance.
 	engine *gin.Engine
 
@@ -412,7 +417,7 @@ func NewServer(cfg *config.Config, authManager *auth.Manager, accessManager *sdk
 	s.refreshPluginManagementRoutes()
 	engine.NoRoute(s.pluginManagementNoRoute)
 
-	// === CLIProxyAPIPlus 扩展: 注册 Kiro OAuth Web 路由 ===
+	// CLIProxyAPIPlus extension: register Kiro OAuth web routes.
 	kiroOAuthHandler := kiro.NewOAuthWebHandler(cfg)
 	kiroOAuthHandler.RegisterRoutes(engine)
 	log.Info("Kiro OAuth Web routes registered at /v0/oauth/kiro/*")
@@ -1630,17 +1635,51 @@ func homeModelInt64Value(model map[string]any, keys ...string) int64 {
 // Returns:
 //   - error: An error if the server fails to start
 func (s *Server) Start() error {
+	return s.StartReady(nil)
+}
+
+var (
+	errServerStopped = errors.New("HTTP server already stopped")
+	errServerStarted = errors.New("HTTP server already started")
+)
+
+// StartReady starts the server and blocks until serving ends, like Start.
+// It closes ready after binding, validating TLS, and launching the serving goroutines.
+// This does not guarantee that those goroutines have entered Accept.
+// The caller must provide a fresh channel and must not send on or close it.
+// Startup failures leave ready open. Each Server permits only one startup attempt.
+func (s *Server) StartReady(ready chan<- struct{}) error {
+	return s.startReady(ready, serverListen)
+}
+
+func (s *Server) startReady(ready chan<- struct{}, listen func(string, string) (net.Listener, error)) error {
 	if s == nil || s.server == nil {
 		return fmt.Errorf("failed to start HTTP server: server not initialized")
 	}
+	s.lifecycleMu.Lock()
+	if s.stopped {
+		s.lifecycleMu.Unlock()
+		return errServerStopped
+	}
+	if s.started {
+		s.lifecycleMu.Unlock()
+		return errServerStarted
+	}
+	s.started = true
 
 	addr := s.server.Addr
-	listener, errListen := net.Listen("tcp", addr)
+	// Keep binding and publication atomic with Stop, including the interval
+	// before Listen is entered. TLS file loading does not hold this lock.
+	listener, errListen := listen("tcp", addr)
 	if errListen != nil {
+		s.lifecycleMu.Unlock()
 		return fmt.Errorf("failed to start HTTP server: %v", errListen)
 	}
+	s.muxBaseListener = listener
+	s.lifecycleMu.Unlock()
 
 	useTLS := s.cfg != nil && s.cfg.TLS.Enable
+	var tlsConfig *tls.Config
 	if useTLS {
 		certPath := strings.TrimSpace(s.cfg.TLS.Cert)
 		keyPath := strings.TrimSpace(s.cfg.TLS.Key)
@@ -1658,13 +1697,9 @@ func (s *Server) Start() error {
 			return fmt.Errorf("failed to start HTTPS server: %v", errLoad)
 		}
 
-		tlsConfig := &tls.Config{
+		tlsConfig = &tls.Config{
 			Certificates: []tls.Certificate{certPair},
 			NextProtos:   []string{"h2", "http/1.1"},
-		}
-		s.server.TLSConfig = tlsConfig
-		if errHTTP2 := http2.ConfigureServer(s.server, &http2.Server{}); errHTTP2 != nil {
-			log.Warnf("failed to configure HTTP/2: %v", errHTTP2)
 		}
 		listener = tls.NewListener(listener, tlsConfig)
 		log.Debugf("Starting API server on %s with TLS", addr)
@@ -1673,6 +1708,23 @@ func (s *Server) Start() error {
 	}
 
 	httpListener := newMuxListener(listener.Addr(), 1024)
+	s.lifecycleMu.Lock()
+	if s.stopped {
+		s.lifecycleMu.Unlock()
+		_ = httpListener.Close()
+		if errClose := listener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+			log.Debugf("failed to close listener after shutdown during startup: %v", errClose)
+		}
+		return errServerStopped
+	}
+	// Configure HTTP only after excluding shutdown; certificate I/O stays outside
+	// the lock. Stop sets stopped under this lock before calling Shutdown.
+	if tlsConfig != nil {
+		s.server.TLSConfig = tlsConfig
+		if errHTTP2 := http2.ConfigureServer(s.server, &http2.Server{}); errHTTP2 != nil {
+			log.Warnf("failed to configure HTTP/2: %v", errHTTP2)
+		}
+	}
 	s.muxBaseListener = listener
 	s.muxHTTPListener = httpListener
 
@@ -1685,16 +1737,20 @@ func (s *Server) Start() error {
 	go func() {
 		acceptErrCh <- s.acceptMuxConnections(listener, httpListener)
 	}()
+	if ready != nil {
+		close(ready)
+	}
+	s.lifecycleMu.Unlock()
 
 	select {
 	case errServe := <-httpErrCh:
-		if s.muxBaseListener != nil {
-			if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+		if listener != nil {
+			if errClose := listener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
 				log.Debugf("failed to close shared listener after HTTP serve exit: %v", errClose)
 			}
 		}
-		if s.muxHTTPListener != nil {
-			_ = s.muxHTTPListener.Close()
+		if httpListener != nil {
+			_ = httpListener.Close()
 		}
 		errAccept := <-acceptErrCh
 		errServe = normalizeHTTPServeError(errServe)
@@ -1707,11 +1763,11 @@ func (s *Server) Start() error {
 		}
 		return nil
 	case errAccept := <-acceptErrCh:
-		if s.muxHTTPListener != nil {
-			_ = s.muxHTTPListener.Close()
+		if httpListener != nil {
+			_ = httpListener.Close()
 		}
-		if s.muxBaseListener != nil {
-			if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+		if listener != nil {
+			if errClose := listener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
 				log.Debugf("failed to close shared listener after accept loop exit: %v", errClose)
 			}
 		}
@@ -1737,6 +1793,12 @@ func (s *Server) Start() error {
 // Returns:
 //   - error: An error if the server fails to stop
 func (s *Server) Stop(ctx context.Context) error {
+	s.lifecycleMu.Lock()
+	s.stopped = true
+	httpListener := s.muxHTTPListener
+	listener := s.muxBaseListener
+	s.lifecycleMu.Unlock()
+
 	log.Debug("Stopping API server...")
 
 	if s.keepAliveEnabled {
@@ -1746,18 +1808,18 @@ func (s *Server) Stop(ctx context.Context) error {
 		}
 	}
 
-	if s.muxHTTPListener != nil {
-		_ = s.muxHTTPListener.Close()
+	if httpListener != nil {
+		_ = httpListener.Close()
 	}
-	if s.muxBaseListener != nil {
-		if errClose := s.muxBaseListener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
+	if listener != nil {
+		if errClose := listener.Close(); errClose != nil && !errors.Is(errClose, net.ErrClosed) {
 			log.Debugf("failed to close shared listener: %v", errClose)
 		}
 	}
 
 	// Shutdown the HTTP server.
 	if err := s.server.Shutdown(ctx); err != nil {
-		return fmt.Errorf("failed to shutdown HTTP server: %v", err)
+		return fmt.Errorf("failed to shutdown HTTP server: %w", err)
 	}
 
 	log.Debug("API server stopped")

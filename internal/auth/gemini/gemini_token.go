@@ -4,8 +4,10 @@
 package gemini
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,6 +70,13 @@ func (ts *GeminiTokenStorage) SaveTokenToFile(authFilePath string) error {
 		return fmt.Errorf("failed to create directory: %v", err)
 	}
 
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(data); err != nil {
+		return fmt.Errorf("failed to write token to file: %w", err)
+	}
+
 	f, err := os.Create(authFilePath)
 	if err != nil {
 		return fmt.Errorf("failed to create token file: %w", err)
@@ -78,10 +87,10 @@ func (ts *GeminiTokenStorage) SaveTokenToFile(authFilePath string) error {
 		}
 	}()
 
-	enc := json.NewEncoder(f)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(data); err != nil {
+	if n, err := f.Write(buf.Bytes()); err != nil {
 		return fmt.Errorf("failed to write token to file: %w", err)
+	} else if n != buf.Len() {
+		return fmt.Errorf("failed to write token to file: %w", io.ErrShortWrite)
 	}
 	return nil
 }

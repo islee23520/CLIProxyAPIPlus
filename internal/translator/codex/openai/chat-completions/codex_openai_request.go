@@ -59,6 +59,9 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	} else {
 		out, _ = sjson.SetBytes(out, "reasoning.effort", "medium")
 	}
+	if serviceTier := normalizeOpenAIServiceTier(gjson.GetBytes(rawJSON, "service_tier")); serviceTier != "" {
+		out, _ = sjson.SetBytes(out, "service_tier", serviceTier)
+	}
 	out, _ = sjson.SetBytes(out, "parallel_tool_calls", true)
 	out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
 	out, _ = sjson.SetBytes(out, "include", []string{"reasoning.encrypted_content"})
@@ -371,6 +374,20 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 
 	out, _ = sjson.SetBytes(out, "store", false)
 	return out
+}
+
+func normalizeOpenAIServiceTier(result gjson.Result) string {
+	if !result.Exists() || result.Type != gjson.String {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(result.String())) {
+	case "fast", "priority":
+		return "priority"
+	case "ultrafast":
+		return "ultrafast"
+	default:
+		return ""
+	}
 }
 
 func setToolCallOutputContent(funcOutput []byte, content gjson.Result) []byte {

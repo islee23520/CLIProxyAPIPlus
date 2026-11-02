@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/runtime/executor/helps"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -33,7 +34,6 @@ const (
 	codexImagesEditsPath         = "/v1/images/edits"
 	codexDirectImagesGenerations = "/images/generations"
 	codexDirectImagesEdit        = "/images/edits"
-	codexGPTImage15Model         = "gpt-image-1.5"
 	codexOpenAIImagesMainModel   = "gpt-5.4-mini"
 )
 
@@ -637,12 +637,7 @@ func codexOpenAIImageBaseModel(model string) string {
 }
 
 func codexIsDirectOpenAIImageModel(model string) bool {
-	switch strings.ToLower(strings.TrimSpace(model)) {
-	case codexGPTImage15Model, codexDefaultImageToolModel:
-		return true
-	default:
-		return false
-	}
+	return registry.IsCodexImageModel(model)
 }
 
 func (e *CodexExecutor) prepareCodexOpenAIImageBody(body []byte, req cliproxyexecutor.Request, opts cliproxyexecutor.Options, mainModel string) ([]byte, error) {

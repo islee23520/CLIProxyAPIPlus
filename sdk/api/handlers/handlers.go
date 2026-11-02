@@ -19,6 +19,7 @@ import (
 	. "github.com/router-for-me/CLIProxyAPI/v7/internal/constant"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/interfaces"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/logging"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/registry"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/thinking"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
@@ -1647,12 +1648,7 @@ func (h *BaseAPIHandler) validateImageOnlyModel(modelName string, allowImageMode
 }
 
 func isOpenAIImageOnlyModel(model string) bool {
-	switch strings.ToLower(strings.TrimSpace(routeModelBaseName(model))) {
-	case "gpt-image-1.5", "gpt-image-2":
-		return true
-	default:
-		return false
-	}
+	return registry.IsCodexImageModel(model)
 }
 
 func routeModelBaseName(model string) string {

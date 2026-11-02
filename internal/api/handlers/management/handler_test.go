@@ -3,7 +3,6 @@ package management
 import (
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -11,7 +10,7 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 )
 
-func TestAuthenticateManagementKey_LocalhostIPBan_BlocksCorrectKeyDuringBan(t *testing.T) {
+func TestAuthenticateManagementKey_LocalhostNeverBanned(t *testing.T) {
 	h := &Handler{
 		cfg:            &config.Config{},
 		failedAttempts: make(map[string]*attemptInfo),
@@ -29,14 +28,8 @@ func TestAuthenticateManagementKey_LocalhostIPBan_BlocksCorrectKeyDuringBan(t *t
 	}
 
 	allowed, statusCode, errMsg := h.AuthenticateManagementKey("127.0.0.1", true, "test-secret")
-	if allowed {
-		t.Fatalf("expected correct key to be denied while banned")
-	}
-	if statusCode != http.StatusForbidden {
-		t.Fatalf("expected forbidden status while banned, got %d", statusCode)
-	}
-	if !strings.HasPrefix(errMsg, "IP banned due to too many failed attempts. Try again in") {
-		t.Fatalf("unexpected banned message: %q", errMsg)
+	if !allowed || statusCode != 0 || errMsg != "" {
+		t.Fatalf("expected localhost correct key to remain accepted: allowed=%t status=%d msg=%q", allowed, statusCode, errMsg)
 	}
 }
 
@@ -85,4 +78,38 @@ func TestMiddlewareSetsSupportPluginHeader(t *testing.T) {
 			t.Fatalf("X-CPA-SUPPORT-PLUGIN = %q, want %q", got, pluginhost.SupportPluginHeaderValue())
 		}
 	})
+}
+
+func TestAuthenticateManagementKey_TrustedIPNeverBanned(t *testing.T) {
+	h := &Handler{
+		cfg:            &config.Config{RemoteManagement: config.RemoteManagement{AllowRemote: true, TrustedIPs: []string{"100.71.30.111"}}},
+		failedAttempts: make(map[string]*attemptInfo),
+		envSecret:      "test-secret",
+	}
+
+	for i := 0; i < 6; i++ {
+		allowed, statusCode, errMsg := h.AuthenticateManagementKey("100.71.30.111", false, "wrong-secret")
+		if allowed || statusCode != http.StatusUnauthorized || errMsg != "invalid management key" {
+			t.Fatalf("trusted attempt %d: allowed=%t status=%d message=%q", i+1, allowed, statusCode, errMsg)
+		}
+	}
+}
+
+func TestAuthenticateManagementKey_UntrustedIPStillBanned(t *testing.T) {
+	h := &Handler{
+		cfg:            &config.Config{RemoteManagement: config.RemoteManagement{AllowRemote: true, TrustedIPs: []string{"100.71.30.111"}}},
+		failedAttempts: make(map[string]*attemptInfo),
+		envSecret:      "test-secret",
+	}
+
+	for i := 0; i < 5; i++ {
+		_, statusCode, _ := h.AuthenticateManagementKey("100.71.30.112", false, "wrong-secret")
+		if statusCode != http.StatusUnauthorized {
+			t.Fatalf("untrusted attempt %d status = %d, want %d", i+1, statusCode, http.StatusUnauthorized)
+		}
+	}
+	_, statusCode, _ := h.AuthenticateManagementKey("100.71.30.112", false, "test-secret")
+	if statusCode != http.StatusForbidden {
+		t.Fatalf("untrusted client status = %d, want %d", statusCode, http.StatusForbidden)
+	}
 }

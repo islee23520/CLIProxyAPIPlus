@@ -2165,7 +2165,9 @@ func (m *Manager) Register(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(authClone)
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	if errPersist := m.persist(ctx, auth); errPersist != nil {
+		log.Error("auth persistence failed; runtime state may not survive restart")
+	}
 	m.hook.OnAuthRegistered(ctx, auth.Clone())
 	if clearedCooldown {
 		m.persistCooldownStates(ctx)
@@ -2212,7 +2214,9 @@ func (m *Manager) Update(ctx context.Context, auth *Auth) (*Auth, error) {
 		m.scheduler.upsertAuth(authClone)
 	}
 	m.queueRefreshReschedule(auth.ID)
-	_ = m.persist(ctx, auth)
+	if errPersist := m.persist(ctx, auth); errPersist != nil {
+		log.Error("auth persistence failed; runtime state may not survive restart")
+	}
 	m.hook.OnAuthUpdated(ctx, auth.Clone())
 	if clearedCooldown {
 		m.persistCooldownStates(ctx)

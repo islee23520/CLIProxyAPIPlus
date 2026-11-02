@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -275,7 +276,7 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 		c.Header("X-CPA-BUILD-DATE", buildinfo.BuildDate)
 		c.Header("X-CPA-SUPPORT-PLUGIN", pluginhost.SupportPluginHeaderValue())
 
-		clientIP := c.ClientIP()
+		clientIP := clientIPFromRemoteAddr(c.Request.RemoteAddr)
 		localClient := clientIP == "127.0.0.1" || clientIP == "::1"
 
 		// Accept either Authorization: Bearer <key> or X-Management-Key
@@ -301,6 +302,17 @@ func (h *Handler) Middleware() gin.HandlerFunc {
 	}
 }
 
+// clientIPFromRemoteAddr deliberately ignores forwarded headers. The management
+// endpoint is exposed directly, so accepting an unverified X-Forwarded-For value
+// would let a remote client spoof a trusted IP and bypass the failure-ban policy.
+func clientIPFromRemoteAddr(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
+}
+
 // AuthenticateManagementKey verifies the provided management key for the given client.
 // It mirrors the behaviour of Middleware() so non-HTTP callers can reuse the same logic.
 func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, provided string) (bool, int, string) {
@@ -323,12 +335,21 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	if h.allowRemoteOverride {
 		allowRemote = true
 	}
+	trustedClient := localClient
+	if cfg != nil {
+		for _, trustedIP := range cfg.RemoteManagement.TrustedIPs {
+			if clientIP == trustedIP {
+				trustedClient = true
+				break
+			}
+		}
+	}
 	envSecret := h.envSecret
 
 	now := time.Now()
 	h.attemptsMu.Lock()
 	ai := h.failedAttempts[clientIP]
-	if ai != nil && !ai.blockedUntil.IsZero() {
+	if !trustedClient && ai != nil && !ai.blockedUntil.IsZero() {
 		if now.Before(ai.blockedUntil) {
 			remaining := ai.blockedUntil.Sub(now).Round(time.Second)
 			h.attemptsMu.Unlock()
@@ -345,19 +366,21 @@ func (h *Handler) AuthenticateManagementKey(clientIP string, localClient bool, p
 	}
 
 	fail := func() {
+		if trustedClient {
+			return
+		}
 		h.attemptsMu.Lock()
-		aip := h.failedAttempts[clientIP]
-		if aip == nil {
-			aip = &attemptInfo{}
-			h.failedAttempts[clientIP] = aip
+		defer h.attemptsMu.Unlock()
+		ai := h.failedAttempts[clientIP]
+		if ai == nil {
+			ai = &attemptInfo{}
+			h.failedAttempts[clientIP] = ai
 		}
-		aip.count++
-		aip.lastActivity = time.Now()
-		if aip.count >= maxFailures {
-			aip.blockedUntil = time.Now().Add(banDuration)
-			aip.count = 0
+		ai.count++
+		ai.lastActivity = time.Now()
+		if ai.count >= maxFailures {
+			ai.blockedUntil = time.Now().Add(banDuration)
 		}
-		h.attemptsMu.Unlock()
 	}
 
 	reset := func() {
