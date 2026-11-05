@@ -4,15 +4,15 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
-	"github.com/tidwall/gjson"
+	"github.com/MoeForge/moego/ojson"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func TestEnsureXAINativeXSearchToolInjectsWhenMissing(t *testing.T) {
 	body := []byte(`{"model":"grok-4.6","tools":[{"type":"web_search"}]}`)
 	got := ensureXAINativeXSearchTool(body)
 	types := []string{}
-	for _, tool := range gjson.GetBytes(got, "tools").Array() {
+	for _, tool := range ojson.GetBytes(got, "tools").Array() {
 		types = append(types, tool.Get("type").String())
 	}
 	if strings.Join(types, ",") != "web_search,x_search" {
@@ -23,7 +23,7 @@ func TestEnsureXAINativeXSearchToolInjectsWhenMissing(t *testing.T) {
 func TestEnsureXAINativeXSearchToolIsIdempotent(t *testing.T) {
 	body := []byte(`{"tools":[{"type":"x_search"}]}`)
 	got := ensureXAINativeXSearchTool(body)
-	if n := len(gjson.GetBytes(got, "tools").Array()); n != 1 {
+	if n := len(ojson.GetBytes(got, "tools").Array()); n != 1 {
 		t.Fatalf("tool count = %d, want 1", n)
 	}
 }

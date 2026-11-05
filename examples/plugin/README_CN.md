@@ -119,7 +119,7 @@ plugins:
 - **注意**：非流式执行（`executor.execute`）和流式执行（`executor.execute_stream`）两处报错路径均需要设置 `http_status`，以保证异常分类行为一致。
 - 原生动态库插件通过 C ABI 交换序列化的 JSON 缓冲区通信，因此状态码必须编码到序列化的 JSON 信封中（例如使用 `pluginabi.NewErrorEnvelope` 或自定义带 `http_status` 字段的信封结构体）。Go 语言原生的 error 对象无法跨越 C ABI 边界传递。
 
-Go 语言编写的插件可导入 `github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi` 并直接使用 `pluginabi.NewErrorEnvelope(code, message, httpStatus)`：
+Go 语言编写的插件可导入 `github.com/router-for-me/CLIProxyAPI/v8/sdk/pluginabi` 并直接使用 `pluginabi.NewErrorEnvelope(code, message, httpStatus)`：
 
 ```go
 // 推荐方式：直接使用 sdk/pluginabi 构造错误信封
@@ -160,6 +160,11 @@ make -C examples/plugin build
 ```
 
 构建产物会写入 `examples/plugin/bin`。
+
+在 CI 构建机（例如 `ubuntu-latest`）上编译用于跨机器分发的预编译 `c-shared` 动态库插件时，请显式锁定最低 CPU 指令集基线，避免构建机默认生成的高阶指令集（如 AVX/AVX2/AVX-512）在不支持相应扩展的宿主机或虚拟化环境中触发 `SIGILL`：
+
+- `amd64`：`GOAMD64=v1 CGO_CFLAGS="-march=x86-64"`
+- `arm64`：`GOARM64=v8.0 CGO_CFLAGS="-march=armv8-a"`
 
 ## 说明
 
