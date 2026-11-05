@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 )
 
 func newReadinessServer() *Server {
@@ -425,6 +425,7 @@ func TestServerStopCannotReturnBeforePendingBind(t *testing.T) {
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(releaseBind) }) }
 	ready := make(chan struct{})
+	bound := make(chan net.Listener, 1)
 	go func() {
 		startResult <- s.startReady(ready, func(network, addr string) (net.Listener, error) {
 			close(beforeBind)
@@ -434,7 +435,11 @@ func TestServerStopCannotReturnBeforePendingBind(t *testing.T) {
 				return nil, errors.New("Stop returned before pending bind")
 			default:
 			}
-			return net.Listen(network, addr)
+			listener, err := net.Listen(network, addr)
+			if err == nil {
+				bound <- listener
+			}
+			return listener, err
 		})
 	}()
 	t.Cleanup(func() {
@@ -469,10 +474,12 @@ func TestServerStopCannotReturnBeforePendingBind(t *testing.T) {
 	awaitReadinessSignal(t, stopEntered)
 	release()
 	awaitReadinessSignal(t, stopReturned)
-	s.lifecycleMu.Lock()
-	listener := s.muxBaseListener
-	s.lifecycleMu.Unlock()
-	if listener == nil {
+	// Stop clears the published listener after closing it, so observe the
+	// listener the pending bind returned.
+	var listener net.Listener
+	select {
+	case listener = <-bound:
+	default:
 		t.Fatal("pending bind did not publish its listener")
 	}
 	if conn, err := listener.Accept(); !errors.Is(err, net.ErrClosed) {
@@ -652,16 +659,27 @@ func testServerStopDrainsActiveRequest(t *testing.T, cancelShutdown bool) {
 	default:
 	}
 	if cancelShutdown {
+		// Once the shutdown context ends, Stop force-closes the remaining
+		// connection (upstream #6094) and reports a clean stop.
 		cancelStop()
 		stopAwaited = true
-		if errStop := awaitReadinessResult(t, stopResult); !errors.Is(errStop, context.Canceled) {
-			t.Fatalf("Stop after cancellation = %v, want context.Canceled", errStop)
+		if errStop := awaitReadinessResult(t, stopResult); errStop != nil {
+			t.Fatalf("Stop after cancellation = %v, want nil", errStop)
 		}
 		select {
 		case <-requestContext.Done():
-			t.Fatal("canceled shutdown canceled the active request")
-		default:
+		case <-ctx.Done():
+			t.Fatal("forced close did not end the active request")
 		}
+		release()
+		if suffix, errRead := io.ReadAll(resp.Body); errRead == nil && string(prefix)+string(suffix) == first+last {
+			t.Fatal("request completed after Stop force-closed it")
+		}
+		startAwaited = true
+		if errStart := awaitReadinessResult(t, startResult); errStart != nil {
+			t.Errorf("StartReady: %v", errStart)
+		}
+		return
 	}
 	release()
 	suffix, err := io.ReadAll(resp.Body)

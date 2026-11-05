@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/misc"
 )
 
 type preencodeTokenMarshaler struct {
@@ -39,7 +39,7 @@ func TestSaveTokenToFile_PreencodeUnsupportedMetadataPreservesDestination(t *tes
 			}
 			t.Run(name, func(t *testing.T) {
 				path := filepath.Join(t.TempDir(), "nested", "token.json")
-				sentinel := []byte("existing synthetic token sentinel\n")
+				sentinel := []byte(`{"sentinel":"existing synthetic token"}`)
 				if existing {
 					if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 						t.Fatal(err)
@@ -77,7 +77,7 @@ func TestSaveTokenToFile_PreencodeUnsupportedMetadataPreservesDestination(t *tes
 
 func TestSaveTokenToFile_PreencodeMarshalerErrorPreservesDestination(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "token.json")
-	sentinel := []byte("existing synthetic token sentinel\n")
+	sentinel := []byte(`{"sentinel":"existing synthetic token"}`)
 	if err := os.WriteFile(path, sentinel, 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -102,70 +102,59 @@ func TestSaveTokenToFile_PreencodeMarshalerErrorPreservesDestination(t *testing.
 	}
 }
 
-func TestSaveTokenToFile_PreencodePreservesEncoderOutputAndFileIdentity(t *testing.T) {
-	for _, existing := range []bool{false, true} {
-		name := "new file"
-		if existing {
-			name = "shorter overwrite"
+func TestSaveTokenToFile_WritesMarshalOutputAndPreservesInvalidDestination(t *testing.T) {
+	t.Run("new file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "token.json")
+		calls := 0
+		ts := &CodexTokenStorage{
+			AccessToken: "synthetic-access",
+			Type:        "codex",
+			Metadata: map[string]any{
+				"custom": preencodeTokenMarshaler{calls: &calls},
+				"html":   "<tag>&value</tag>",
+				"nested": map[string]any{"count": 7, "enabled": true},
+			},
 		}
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "token.json")
-			var before os.FileInfo
-			if existing {
-				if err := os.WriteFile(path, bytes.Repeat([]byte("x"), 4096), 0600); err != nil {
-					t.Fatal(err)
-				}
-				var err error
-				before, err = os.Stat(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-			}
-			calls := 0
-			ts := &CodexTokenStorage{
-				AccessToken: "synthetic-access",
-				Type:        "codex",
-				Metadata: map[string]any{
-					"custom": preencodeTokenMarshaler{calls: &calls},
-					"html":   "<tag>&value</tag>",
-					"nested": map[string]any{"count": 7, "enabled": true},
-				},
-			}
-			data, err := misc.MergeMetadata(ts, ts.Metadata)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var want bytes.Buffer
-			if err := json.NewEncoder(&want).Encode(data); err != nil {
-				t.Fatal(err)
-			}
-			calls = 0
-			ts.Type = "stale"
-			if err := ts.SaveTokenToFile(path); err != nil {
-				t.Fatal(err)
-			}
-			if calls != 1 {
-				t.Fatalf("MarshalJSON called %d times, want 1", calls)
-			}
-			got, err := os.ReadFile(path)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !bytes.Equal(got, want.Bytes()) {
-				t.Fatal("saved bytes differ from json.Encoder output")
-			}
-			if !bytes.HasSuffix(got, []byte("\n")) || !bytes.Contains(got, []byte(`\u003ctag\u003e\u0026`)) {
-				t.Fatal("expected Encoder newline and HTML escaping")
-			}
-			if existing {
-				after, err := os.Stat(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !os.SameFile(before, after) {
-					t.Fatal("save replaced existing file identity")
-				}
-			}
-		})
-	}
+		data, err := misc.MergeMetadata(ts, ts.Metadata)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want, err := json.Marshal(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls = 0
+		ts.Type = "stale"
+		if err := ts.SaveTokenToFile(path); err != nil {
+			t.Fatal(err)
+		}
+		if calls != 1 {
+			t.Fatalf("MarshalJSON called %d times, want 1", calls)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatal("saved bytes differ from json.Marshal output")
+		}
+	})
+	t.Run("invalid existing file is preserved", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "token.json")
+		original := bytes.Repeat([]byte("x"), 4096)
+		if err := os.WriteFile(path, original, 0600); err != nil {
+			t.Fatal(err)
+		}
+		ts := &CodexTokenStorage{AccessToken: "synthetic-access"}
+		if err := ts.SaveTokenToFile(path); err == nil {
+			t.Fatal("expected an error for an invalid existing credential file")
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, original) {
+			t.Fatal("failed save changed the existing file")
+		}
+	})
 }

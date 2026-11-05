@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/router-for-me/CLIProxyAPI/v7/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
 	"golang.org/x/net/http2"
 )
 
@@ -235,11 +235,25 @@ func testServerStopDrainsHTTP2Streams(t *testing.T, cancelAt int) {
 		default:
 		}
 		if cancelAt == i {
+			// Once the shutdown context ends, Stop force-closes the remaining
+			// streams (upstream #6094) and reports a clean stop.
 			cancelStop()
 			wait(stopDone)
-			if !errors.Is(stopErr, context.Canceled) {
-				t.Fatalf("Stop with active streams = %v, want context.Canceled", stopErr)
+			if stopErr != nil {
+				t.Fatalf("Stop after cancellation = %v, want nil", stopErr)
 			}
+			for j := i; j < len(gates); j++ {
+				release[j]()
+				wait(bodies[j])
+				if clientErrors[j] == nil && responseBodies[j] == first+last {
+					t.Fatalf("stream %d completed after Stop force-closed it", j)
+				}
+			}
+			wait(startDone)
+			if startErr != nil {
+				t.Fatalf("StartReady: %v", startErr)
+			}
+			return
 		}
 		release[i]()
 		wait(bodies[i])

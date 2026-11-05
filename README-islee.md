@@ -9,8 +9,8 @@ Workflows inherited from upstream that sync or publish for kaitranntt are disabl
 | Patch | Where |
 | --- | --- |
 | `routing.disabled-auth-reroute` | `sdk/cliproxy/auth/disabled_auth_reroute.go`, hooks in `conductor_lifecycle.go` (disable transition) and `conductor_execution.go` (attempt binding), config in `internal/config/config_types.go` |
-| SO_REUSEPORT listener for blue/green rolling updates (`CLIPROXY_LISTEN_REUSEPORT=1`) and graceful drain | `internal/api/listen_reuseport_*.go`, `internal/api/server.go`, `sdk/cliproxy/service_lifecycle.go` |
-| Token files encoded before the file is opened (no truncated JSON on encode errors) | `internal/auth/*/token.go` |
+| SO_REUSEPORT listener for blue/green rolling updates (`CLIPROXY_LISTEN_REUSEPORT=1`) and graceful drain (in-flight requests drain until the shutdown deadline, then the remaining connections are force-closed) | `internal/api/listen_reuseport_*.go`, `internal/api/server.go`, `sdk/cliproxy/service_lifecycle.go` |
+| Token files encoded before the file is opened (no truncated JSON on encode errors); Codex uses upstream's locked atomic write since v8 | `internal/auth/*/token.go` |
 | Tailnet relay | `cmd/tailnet-relay` |
 | Management latest-version check against this lineage with release-page fallback | `internal/api/handlers/management/config_basic.go` |
 

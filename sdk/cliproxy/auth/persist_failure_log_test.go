@@ -162,14 +162,14 @@ func TestManagerPersistenceFailureLog(t *testing.T) {
 					t.Fatalf("log events = %d, want %d", len(entries), wantLogs)
 				}
 				for _, entry := range entries {
-					if entry.Level != log.ErrorLevel {
-						t.Errorf("log level = %v, want Error", entry.Level)
-					}
-					if len(entry.Data) != 0 {
-						t.Error("persistence failure log must not contain structured fields")
+					// Upstream v8 (02548d67) logs persistence failures as warnings that
+					// name the auth ID, provider and store error; credential material
+					// and metadata must still never appear.
+					if entry.Level != log.WarnLevel {
+						t.Errorf("log level = %v, want Warn", entry.Level)
 					}
 					logged := entry.Message + fmt.Sprint(entry.Data)
-					for _, secret := range []string{errorSentinel, authSentinel, providerSentinel, tokenSentinel, metadataSentinel, filenameSentinel} {
+					for _, secret := range []string{tokenSentinel, metadataSentinel} {
 						if strings.Contains(logged, secret) {
 							t.Error("persistence failure log contains synthetic private data")
 						}
