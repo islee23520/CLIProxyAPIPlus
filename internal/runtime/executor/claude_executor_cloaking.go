@@ -4315,3 +4315,21 @@ func ensureModelMaxTokensDoc(doc *ojson.Doc, modelID string) bool {
 
 	return false
 }
+
+// rejectNonNativeClaudeOAuth enforces claude-native-clients-only: a Claude OAuth
+// (subscription) credential serves only confirmed native Claude Code requests. The
+// refusal is a 400 request fault, so it never cools down or rotates the credential.
+func rejectNonNativeClaudeOAuth(cfg *config.Config, auth *cliproxyauth.Auth, detection helps.ClaudeCodeRequestDetection) error {
+	if cfg == nil || !cfg.ClaudeNativeClientsOnly || detection.Confirmed {
+		return nil
+	}
+	if auth != nil && auth.Attributes != nil && strings.TrimSpace(auth.Attributes["api_key"]) != "" {
+		return nil
+	}
+	log.WithFields(log.Fields{
+		"entrypoint":     detection.Entrypoint,
+		"native_client":  detection.NativeClient,
+		"strong_signals": detection.StrongSignals,
+	}).Warn("claude executor: refused a non-Claude-Code request on a Claude subscription credential")
+	return statusErr{code: http.StatusBadRequest, msg: "this proxy serves Claude subscription accounts to Claude Code clients only"}
+}

@@ -209,6 +209,11 @@ type Config struct {
 	// the auth/OAuth token file). Default false preserves the per-client "auto" behavior.
 	DisableClaudeCloakMode bool `yaml:"disable-claude-cloak-mode" json:"disable-claude-cloak-mode"`
 
+	// ClaudeNativeClientsOnly refuses requests on Claude OAuth (subscription) credentials
+	// unless they are confirmed native Claude Code traffic. Claude API-key credentials are
+	// unaffected. Default false keeps the cloaking behavior for every client.
+	ClaudeNativeClientsOnly bool `yaml:"claude-native-clients-only" json:"claude-native-clients-only"`
+
 	// OpenAICompatibility defines OpenAI API compatibility configurations for external providers.
 	OpenAICompatibility []OpenAICompatibility `yaml:"openai-compatibility" json:"openai-compatibility"`
 

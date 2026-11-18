@@ -9,6 +9,7 @@ import (
 
 	claudeauth "github.com/router-for-me/CLIProxyAPI/v8/internal/auth/claude"
 	"github.com/router-for-me/CLIProxyAPI/v8/internal/config"
+	"github.com/router-for-me/CLIProxyAPI/v8/internal/runtime/executor/helps"
 	cliproxyauth "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/auth"
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v8/sdk/cliproxy/executor"
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v8/sdk/translator"
@@ -342,5 +343,28 @@ func TestClaudeExecutorPrepareRequestAuthEmptyAccountUUIDInProfileFallback(t *te
 	}
 	if executor.ShouldPrepareRequestAuth(prepared) {
 		t.Fatal("ShouldPrepareRequestAuth() = true after identity was populated")
+	}
+}
+
+func TestRejectNonNativeClaudeOAuth(t *testing.T) {
+	oauth := &cliproxyauth.Auth{Metadata: map[string]any{"access_token": "oauth-token"}}
+	apiKey := &cliproxyauth.Auth{Attributes: map[string]string{"api_key": "sk-ant-api"}}
+	enabled := &config.Config{ClaudeNativeClientsOnly: true}
+	native := helps.ClaudeCodeRequestDetection{Confirmed: true}
+	foreign := helps.ClaudeCodeRequestDetection{}
+
+	if err := rejectNonNativeClaudeOAuth(&config.Config{}, oauth, foreign); err != nil {
+		t.Fatalf("disabled setting must not refuse: %v", err)
+	}
+	if err := rejectNonNativeClaudeOAuth(enabled, oauth, native); err != nil {
+		t.Fatalf("confirmed Claude Code must pass: %v", err)
+	}
+	if err := rejectNonNativeClaudeOAuth(enabled, apiKey, foreign); err != nil {
+		t.Fatalf("API-key credentials must pass: %v", err)
+	}
+	err := rejectNonNativeClaudeOAuth(enabled, oauth, foreign)
+	var coded interface{ StatusCode() int }
+	if !errors.As(err, &coded) || coded.StatusCode() != http.StatusBadRequest {
+		t.Fatalf("foreign client on OAuth credential: err = %v, want a 400 status error", err)
 	}
 }

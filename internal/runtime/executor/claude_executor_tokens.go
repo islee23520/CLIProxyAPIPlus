@@ -160,6 +160,9 @@ func (e *ClaudeExecutor) countTokensUpstream(ctx context.Context, auth *cliproxy
 		originalPayload = opts.OriginalRequest
 	}
 	incomingHeaders, claudeCodeDetection := detectIncomingClaudeCodeRequest(ctx, opts.Headers, originalPayload, true, e.cfg)
+	if errNative := rejectNonNativeClaudeOAuth(e.cfg, auth, claudeCodeDetection); errNative != nil {
+		return cliproxyexecutor.Response{}, errNative
+	}
 	initialPolicy, _ := resolveClaudeWirePolicy(e.cfg, auth, apiKey, claudeCodeDetection.Confirmed)
 	confirmedClaudeCode := isEffectiveConfirmedClaudeCode(claudeCodeDetection, initialPolicy)
 	claudeSessionID := ""
