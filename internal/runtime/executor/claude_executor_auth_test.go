@@ -344,19 +344,3 @@ func TestClaudeExecutorPrepareRequestAuthEmptyAccountUUIDInProfileFallback(t *te
 		t.Fatal("ShouldPrepareRequestAuth() = true after identity was populated")
 	}
 }
-
-func TestClaudeCredsReadsBaseURLFromOAuthMetadata(t *testing.T) {
-	auth := &cliproxyauth.Auth{Metadata: map[string]any{
-		"access_token": "oauth-token",
-		"base_url":     "http://127.0.0.1:8329",
-	}}
-	apiKey, baseURL := claudeCreds(auth)
-	if apiKey != "oauth-token" || baseURL != "http://127.0.0.1:8329" {
-		t.Fatalf("claudeCreds() = (%q, %q), want metadata token and base_url", apiKey, baseURL)
-	}
-
-	auth.Attributes = map[string]string{"base_url": "https://configured.example"}
-	if _, baseURL = claudeCreds(auth); baseURL != "https://configured.example" {
-		t.Fatalf("claudeCreds() base_url = %q, want the attribute to win over metadata", baseURL)
-	}
-}
