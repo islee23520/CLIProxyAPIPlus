@@ -184,3 +184,18 @@ func TestSharedUpstreamEmptyHistoricalContainers(t *testing.T) {
 		}
 	}
 }
+
+func TestClaudeNativeClientsOnlyParsesFromUpstreamAndLegacyRoot(t *testing.T) {
+	for name, raw := range map[string]string{
+		"upstream": "upstream:\n  claude:\n    claude-native-clients-only: true\n",
+		"legacy":   "claude-native-clients-only: true\n",
+	} {
+		cfg, errParse := ParseConfigBytes([]byte(raw))
+		if errParse != nil {
+			t.Fatalf("%s: %v", name, errParse)
+		}
+		if !cfg.ClaudeNativeClientsOnly {
+			t.Fatalf("%s: ClaudeNativeClientsOnly = false, want true", name)
+		}
+	}
+}
