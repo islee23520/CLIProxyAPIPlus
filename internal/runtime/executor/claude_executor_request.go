@@ -1669,6 +1669,11 @@ func claudeCreds(a *cliproxyauth.Auth) (apiKey, baseURL string) {
 	if apiKey == "" {
 		apiKey = claudeauth.ReadMetadataString(&a.Metadata, "access_token")
 	}
+	// OAuth logins live in auth files, which only reach Metadata. A base_url there lets a
+	// login route through a local relay (for example one that replays requests via claude -p).
+	if baseURL == "" {
+		baseURL = claudeauth.ReadMetadataString(&a.Metadata, "base_url")
+	}
 	return
 }
 
